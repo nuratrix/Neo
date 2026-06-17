@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "neo": {
+      "command": "python",
+      "args": ["Neo MCP/neo_mcp_server.py"],
+      "env": {
+        "NEO_MOCK_MODE": "true"
+      }
+    }
+  }
+}

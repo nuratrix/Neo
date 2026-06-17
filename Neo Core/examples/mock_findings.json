@@ -1,0 +1,98 @@
+{
+  "findings": [
+    {
+      "finding_id": "arn:aws:inspector2:us-east-1:123456789012:finding/aaa-001",
+      "cve_id": "CVE-2024-3094",
+      "title": "xz/liblzma backdoor",
+      "severity": "CRITICAL",
+      "cvss_base": 10.0,
+      "resource_id": "i-0batch-host-001",
+      "resource_type": "AWS_EC2_INSTANCE",
+      "account_id": "123456789012",
+      "region": "us-east-1",
+      "package_name": "xz-utils",
+      "fix_available": true,
+      "exploit_available": true,
+      "first_observed": "2024-03-29T00:00:00+00:00"
+    },
+    {
+      "finding_id": "arn:aws:inspector2:us-east-1:123456789012:finding/bbb-001",
+      "cve_id": "CVE-2021-44228",
+      "title": "Apache Log4j2 Remote Code Execution (Log4Shell)",
+      "severity": "CRITICAL",
+      "cvss_base": 10.0,
+      "resource_id": "i-0public-web-01",
+      "resource_type": "AWS_EC2_INSTANCE",
+      "account_id": "123456789012",
+      "region": "us-east-1",
+      "package_name": "log4j-core",
+      "fix_available": true,
+      "exploit_available": true,
+      "first_observed": "2021-12-10T00:00:00+00:00"
+    },
+    {
+      "finding_id": "arn:aws:inspector2:us-east-1:123456789012:finding/ccc-001",
+      "cve_id": "CVE-2023-44487",
+      "title": "HTTP/2 Rapid Reset Attack",
+      "severity": "HIGH",
+      "cvss_base": 7.5,
+      "resource_id": "i-0internal-api-01",
+      "resource_type": "AWS_EC2_INSTANCE",
+      "account_id": "123456789012",
+      "region": "us-east-1",
+      "package_name": "nghttp2",
+      "fix_available": true,
+      "exploit_available": false,
+      "first_observed": "2023-10-10T00:00:00+00:00"
+    }
+  ],
+  "contexts": [
+    {
+      "resource_id": "i-0batch-host-001",
+      "exposure": "isolated",
+      "criticality": "low",
+      "compensating_controls": 0.0,
+      "tags": {"Criticality": "low"}
+    },
+    {
+      "resource_id": "i-0public-web-01",
+      "exposure": "public",
+      "criticality": "critical",
+      "compensating_controls": 0.0,
+      "tags": {"Criticality": "critical"}
+    },
+    {
+      "resource_id": "i-0internal-api-01",
+      "exposure": "internal",
+      "criticality": "medium",
+      "compensating_controls": 0.3,
+      "tags": {"Criticality": "medium", "CompensatingControls": "0.3"}
+    }
+  ],
+  "enrichments": [
+    {
+      "cve_id": "CVE-2024-3094",
+      "epss": 0.97412,
+      "percentile": 0.99987,
+      "kev": true,
+      "kev_date_added": "2024-03-29",
+      "kev_known_ransomware": false
+    },
+    {
+      "cve_id": "CVE-2021-44228",
+      "epss": 0.97571,
+      "percentile": 0.99988,
+      "kev": true,
+      "kev_date_added": "2021-12-10",
+      "kev_known_ransomware": true
+    },
+    {
+      "cve_id": "CVE-2023-44487",
+      "epss": 0.00847,
+      "percentile": 0.81234,
+      "kev": false,
+      "kev_date_added": null,
+      "kev_known_ransomware": false
+    }
+  ]
+}

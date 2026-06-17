@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "project-neo"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["httpx", "pydantic>=2", "boto3"]
+
+[project.optional-dependencies]
+mcp = ["mcp[cli]"]
+dev  = ["pytest"]
+
+[project.scripts]
+neo = "neo_core.cli:main"
+
+[tool.setuptools]
+packages = ["neo_core"]
+
+[tool.setuptools.package-dir]
+"neo_core" = "Neo Core"

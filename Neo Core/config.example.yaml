@@ -1,0 +1,24 @@
+# Project Smith configuration (copy to config.yaml). All values optional;
+# omitting any falls back to the defaults baked into smith/risk_engine.py.
+
+aws:
+  region: us-east-1
+  profile: null          # named AWS profile, or null for default credential chain
+  source: inspector      # inspector | securityhub
+  assume_role_name: null # cross-account read-only role for Org-wide exposure lookups
+  # Org-wide: run from the Inspector delegated-admin (or Security Hub aggregator)
+  # account; list_findings already spans all member accounts.
+
+scoring:
+  # Tier cut-offs on the 0-100 risk scale.
+  thresholds:
+    p1: 40.0
+    p2: 20.0
+    p3: 8.0
+  # Likelihood floors.
+  kev_floor: 0.85              # CISA KEV = actively exploited; never score below this
+  exploit_available_floor: 0.5
+
+# How asset owners express context via resource tags:
+#   Criticality: critical | high | medium | low
+#   CompensatingControls: 0.0 - 1.0  (e.g. 0.6 = WAF + EDR meaningfully reduce exploitability)

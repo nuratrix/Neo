@@ -1,0 +1,9 @@
+# Generated output
+out/
+
+# Python build artifacts
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+.env
