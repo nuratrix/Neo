@@ -20,6 +20,7 @@ class Finding(BaseModel):
     fix_available: bool = False
     exploit_available: bool = False
     first_observed: str = ""
+    cloud_provider: str = "aws"   # aws | azure | gcp | onprem
 
 
 class AssetContext(BaseModel):
