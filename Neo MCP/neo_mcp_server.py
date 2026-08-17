@@ -63,8 +63,6 @@ ENVIRONMENT VARIABLES
   AWS credentials via the standard boto3 chain (env / profile / role)
 """
 
-from __future__ import annotations
-
 import json
 import os
 import time
