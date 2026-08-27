@@ -21,6 +21,9 @@ On-prem scanners
   run_qualys_scan               Qualys VMDR
   run_rapid7_scan               Rapid7 InsightVM
 
+Testing
+  load_mock_scan                Load a local mock fixture file (mock mode only)
+
 Analysis
   score_findings                Enrich (EPSS/KEV) + risk-score a stored scan
 
@@ -68,6 +71,7 @@ import os
 import time
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Annotated, Any, Optional
 
 import httpx
@@ -196,6 +200,62 @@ def _build_default_contexts(findings: list[NeoFinding]) -> dict[str, AssetContex
         else:
             contexts[f.resource_id] = AssetContext(resource_id=f.resource_id)
     return contexts
+
+
+# ---------------------------------------------------------------------------
+# TOOLS — Testing
+# ---------------------------------------------------------------------------
+
+_ONPREM_SOURCE_PREFIXES = {"nessus": "nessus-", "qualys": "qualys-", "rapid7": "r7-"}
+
+
+@mcp.tool()
+def load_mock_scan(
+    file_path: Annotated[str, Field(description=(
+        "Path to a mock fixture file in {findings, contexts, enrichments} format "
+        "(same shape as Neo Core/examples/mock_findings*.json). Relative paths are "
+        "resolved against the Neo/ repo root."
+    ))],
+    source_filter: Annotated[Optional[str], Field(description=(
+        "Restrict to one source: aws | azure | gcp | nessus | qualys | rapid7. "
+        "Omit to load every finding in the file."
+    ))] = None,
+) -> dict[str, Any]:
+    """Load findings from a local mock fixture file into the scan store for testing.
+
+    Only usable when NEO_MOCK_MODE is true. Lets you exercise score_findings against
+    a richer, hand-built fixture instead of each discovery tool's small built-in demo
+    dataset. Returns a scan_id usable with score_findings exactly like a live pull.
+    """
+    if not MOCK_MODE:
+        return {"error": "load_mock_scan is only available when NEO_MOCK_MODE=true"}
+
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent.parent / file_path
+    if not path.exists():
+        return {"error": f"file not found: {path}"}
+
+    data = json.loads(path.read_text())
+    raw_findings = data.get("findings", [])
+
+    if source_filter:
+        sf = source_filter.lower()
+        if sf in {"aws", "azure", "gcp"}:
+            raw_findings = [f for f in raw_findings if f.get("cloud_provider") == sf]
+        elif sf in _ONPREM_SOURCE_PREFIXES:
+            prefix = _ONPREM_SOURCE_PREFIXES[sf]
+            raw_findings = [f for f in raw_findings if f.get("finding_id", "").startswith(prefix)]
+        else:
+            return {"error": f"unknown source_filter: {source_filter!r}. "
+                              f"Expected one of: aws, azure, gcp, nessus, qualys, rapid7."}
+
+    if not raw_findings:
+        return {"error": "no findings matched", "file": str(path), "source_filter": source_filter}
+
+    findings = [NeoFinding(**f) for f in raw_findings]
+    scan_id  = f"mock-{source_filter or 'all'}-{int(time.time())}"
+    return _store_scan(scan_id, f"mock-fixture:{source_filter or 'all'}", findings, file=str(path))
 
 
 # ---------------------------------------------------------------------------

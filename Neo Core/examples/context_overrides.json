@@ -1,0 +1,13 @@
+{
+  "scan_id": "mock-aws-...",
+  "context_overrides": {
+    "i-0aws-web-01":    {"exposure": "public",   "criticality": "critical", "compensating_controls": 0.0},
+    "i-0aws-api-01":    {"exposure": "public",   "criticality": "critical", "compensating_controls": 0.0},
+    "i-0aws-lb-01":     {"exposure": "internal", "criticality": "medium",   "compensating_controls": 0.3},
+    "i-0aws-bastion-01":{"exposure": "public",   "criticality": "high",     "compensating_controls": 0.2},
+    "nuratrix-order-svc":{"exposure": "internal","criticality": "high",     "compensating_controls": 0.0},
+    "i-0aws-batch-01":  {"exposure": "isolated", "criticality": "low",      "compensating_controls": 0.0},
+    "123456789012.dkr.ecr.us-east-1.amazonaws.com/frontend@sha256:abc111": {"exposure": "internal", "criticality": "medium", "compensating_controls": 0.0},
+    "i-0aws-internal-tool-01": {"exposure": "isolated", "criticality": "low", "compensating_controls": 0.5}
+  }
+}
