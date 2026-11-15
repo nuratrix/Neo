@@ -9,7 +9,7 @@ member account's vulnerabilities in one place. Normalizes ASFF into the same
 """
 from __future__ import annotations
 
-from .models import Finding
+from .models import Finding, ecosystem_from_package_manager
 
 # ASFF resource type -> our canonical type (so aws_context resolves exposure the same way)
 _TYPE_MAP = {
@@ -34,6 +34,7 @@ def normalize_asff(finding: dict):
     out = []
     for vuln in finding.get("Vulnerabilities", []) or []:
         pkgs = vuln.get("VulnerablePackages", []) or []
+        pkg = pkgs[0] if pkgs else {}
         out.append(
             Finding(
                 finding_id=finding.get("Id", ""),
@@ -45,7 +46,9 @@ def normalize_asff(finding: dict):
                 resource_type=_TYPE_MAP.get(res.get("Type", ""), res.get("Type", "")),
                 account_id=finding.get("AwsAccountId", ""),
                 region=res.get("Region", ""),
-                package_name=pkgs[0].get("Name", "") if pkgs else "",
+                package_name=pkg.get("Name", ""),
+                package_ecosystem=ecosystem_from_package_manager(pkg.get("PackageManager", "")),
+                fixed_version=pkg.get("FixedInVersion", "") or "",
                 fix_available=vuln.get("FixAvailable", "") == "YES",
                 exploit_available=vuln.get("ExploitAvailable", "") == "YES",
                 first_observed=str(finding.get("FirstObservedAt", "")),

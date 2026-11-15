@@ -13,7 +13,8 @@
       "package_name": "xz-utils",
       "fix_available": true,
       "exploit_available": true,
-      "first_observed": "2024-03-29T00:00:00+00:00"
+      "first_observed": "2024-03-29T00:00:00+00:00",
+      "fixed_version": "5.4.5-0.3"
     },
     {
       "finding_id": "arn:aws:inspector2:us-east-1:123456789012:finding/bbb-001",
@@ -28,7 +29,8 @@
       "package_name": "log4j-core",
       "fix_available": true,
       "exploit_available": true,
-      "first_observed": "2021-12-10T00:00:00+00:00"
+      "first_observed": "2021-12-10T00:00:00+00:00",
+      "fixed_version": "2.17.1"
     },
     {
       "finding_id": "arn:aws:inspector2:us-east-1:123456789012:finding/ccc-001",
@@ -41,9 +43,10 @@
       "account_id": "123456789012",
       "region": "us-east-1",
       "package_name": "nghttp2",
-      "fix_available": true,
+      "fix_available": false,
       "exploit_available": false,
-      "first_observed": "2023-10-10T00:00:00+00:00"
+      "first_observed": "2023-10-10T00:00:00+00:00",
+      "fixed_version": ""
     }
   ],
   "contexts": [
@@ -52,21 +55,28 @@
       "exposure": "isolated",
       "criticality": "low",
       "compensating_controls": 0.0,
-      "tags": {"Criticality": "low"}
+      "tags": {
+        "Criticality": "low"
+      }
     },
     {
       "resource_id": "i-0public-web-01",
       "exposure": "public",
       "criticality": "critical",
       "compensating_controls": 0.0,
-      "tags": {"Criticality": "critical"}
+      "tags": {
+        "Criticality": "critical"
+      }
     },
     {
       "resource_id": "i-0internal-api-01",
       "exposure": "internal",
       "criticality": "medium",
       "compensating_controls": 0.3,
-      "tags": {"Criticality": "medium", "CompensatingControls": "0.3"}
+      "tags": {
+        "Criticality": "medium",
+        "CompensatingControls": "0.3"
+      }
     }
   ],
   "enrichments": [

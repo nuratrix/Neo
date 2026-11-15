@@ -29,6 +29,15 @@ Analysis
 
 Remediation
   create_github_remediation_pr  Open a fix PR on GitHub
+  track_remediation             Open + route items (path A/B/C), verify against a scan
+  create_change_request         Path B: raise a ServiceNow change (plans, CIs, window)
+  sync_change_approvals         Pull CAB outcomes from ServiceNow into items
+  check_patch_gate              Is patching allowed right now, and on which hosts?
+  mock_advance_change           Play the CAB against the mock (mock mode only)
+  preview_control_impact        Path C what-if: score/tier with these controls, plus the tag
+  draft_risk_exception          Path C: submit an exception draft for the risk owner
+  create_controls_change_request  Path C: after approval, raise the ServiceNow change that
+                                implements the controls (CAB approves, a person implements)
 
 RESOURCES (read-only context)
 ------------------------------
@@ -38,6 +47,9 @@ RESOURCES (read-only context)
   scan://results/{scan_id}      Raw findings from any discovery tool
   scored://results/{scan_id}    Risk-scored findings (tier, score, breakdown)
   context://map/{scan_id}       Asset context used during a score_findings run
+  controls://catalog            Compensating controls that earn credit, with weights
+  remediation://items           All tracked remediation items (state, path, SLA, change)
+  remediation://item/{item_id}  One item: refs, scan evidence, audit history
 
 PROMPTS (templates for the orchestrating agent)
 -----------------------------------------------
@@ -57,6 +69,9 @@ ENVIRONMENT VARIABLES
   NEO_MOCK_MODE         "true" (default) — no credentials needed
   NEO_MCP_TRANSPORT     stdio (default) | streamable-http | sse
   NEO_HTTP_TIMEOUT      seconds (default 30)
+  NEO_REMEDIATION_DB    SQLite file for remediation items (default neo_remediation.db;
+                        shared with `neo remediate`)
+  SNOW_INSTANCE_URL / SNOW_USERNAME / SNOW_PASSWORD   live ServiceNow (path B)
   GITHUB_TOKEN          PAT with repo scope
   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
   GOOGLE_APPLICATION_CREDENTIALS       path to GCP service-account JSON
@@ -69,7 +84,7 @@ ENVIRONMENT VARIABLES
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Optional
@@ -93,8 +108,18 @@ from neo_core import (
     rapid7 as _rapid7,
     enrich as _enrich,
     risk_engine as _risk_engine,
+    changes as _changes,
+    closeout as _closeout,
+    controls as _controls,
+    exceptions as _exceptions,
+    servicenow as _servicenow,
 )
-from neo_core.models import AssetContext, Finding as NeoFinding
+from neo_core.models import AssetContext, Finding as NeoFinding, ScoredFinding
+from neo_core.remediation import (
+    Path as RemediationPath, RemediationItem, State as RemediationState, finding_key,
+)
+from neo_core.remediation_store import SqliteStore
+from neo_core.servicenow import ChangeError, ChangeState
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -213,7 +238,7 @@ _ONPREM_SOURCE_PREFIXES = {"nessus": "nessus-", "qualys": "qualys-", "rapid7": "
 def load_mock_scan(
     file_path: Annotated[str, Field(description=(
         "Path to a mock fixture file in {findings, contexts, enrichments} format "
-        "(same shape as Neo Core/examples/mock_findings*.json). Relative paths are "
+        "(same shape as neo_core/examples/mock_findings*.json). Relative paths are "
         "resolved against the Neo/ repo root."
     ))],
     source_filter: Annotated[Optional[str], Field(description=(
@@ -557,6 +582,366 @@ def create_github_remediation_pr(
 
 
 # ---------------------------------------------------------------------------
+# TOOLS — Remediation tracking and Path B (host patching via ServiceNow)
+#
+# The agent may open items, raise changes and read approvals. It cannot approve a
+# change, advance an item's state, or patch anything: CAB approval lives in
+# ServiceNow and the patch executor re-checks it (see neo_core/changes.py).
+# ---------------------------------------------------------------------------
+
+REMEDIATION_DB = os.getenv("NEO_REMEDIATION_DB", "neo_remediation.db")
+_ITEM_ID_PATTERN = r"^REM-[0-9A-F]{10}$"
+_remediation_store: SqliteStore | None = None
+
+
+def _store() -> SqliteStore:
+    global _remediation_store
+    if _remediation_store is None:
+        _remediation_store = SqliteStore(REMEDIATION_DB)
+    return _remediation_store
+
+
+def _snow():
+    # Shares the mock's state file with `neo remediate change ...` on the CLI.
+    return _servicenow.get_client(REMEDIATION_DB + ".snow.json")
+
+
+def _utc(s: str) -> datetime:
+    dt = datetime.fromisoformat(s)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _item_row(i: RemediationItem) -> dict[str, Any]:
+    return {
+        "item_id": i.item_id, "cve_id": i.cve_id, "resource_id": i.resource_id,
+        "package": i.package_name, "fixed_version": i.fixed_version, "tier": i.tier,
+        "path": i.path.value, "state": i.state.value, "sla_due": i.sla_due,
+        "change": i.refs.get("chg_number"), "escalated": i.escalated,
+    }
+
+
+@mcp.tool()
+def track_remediation(
+    scan_id: Annotated[str, Field(description="scan_id already passed to score_findings.")],
+    scan_is_complete: Annotated[bool, Field(description=(
+        "True only if this scan covered EVERY asset being tracked. When false (default) a finding "
+        "can only close on a resource this scan reported something for, so a partial scan "
+        "cannot mark other assets' findings as fixed."
+    ))] = False,
+) -> dict[str, Any]:
+    """Open and route a remediation item per scored finding, and verify existing ones.
+
+    Routes each finding to path A (code/image PR), B (host patch via ServiceNow change) or
+    C (risk exception). Items whose finding is absent from this scan close as REMEDIATED;
+    items still present after their window reopen and escalate. Safe to re-run per scan.
+    """
+    record = _SCORED_STORE.get(scan_id)
+    if record is None:
+        return {"error": "scan not scored yet", "hint": "Call score_findings(scan_id) first."}
+    scored = [ScoredFinding.model_validate(s) for s in record["scored_findings"]]
+    covered = None if scan_is_complete else {s.finding.resource_id for s in scored}
+    r = _closeout.sync_scan(_store(), scored, scan_id, covered=covered)
+    return {
+        "scan_id": scan_id, "opened": r.opened, "remediated": r.remediated, "reopened": r.reopened,
+        "rerouted": r.rerouted, "rescored": r.rescored, "not_covered": r.not_covered,
+        "tag_drift": r.drifted, "tag_drift_cleared": r.drift_cleared,
+        "items_resource": "remediation://items",
+    }
+
+
+@mcp.tool()
+def create_change_request(
+    item_id: Annotated[str, Field(description="Remediation item on path B.", pattern=_ITEM_ID_PATTERN)],
+    implementation_plan: Annotated[str, Field(description=(
+        "Numbered steps to apply the fix. Leave empty to use Neo's default."))] = "",
+    backout_plan: Annotated[str, Field(description=(
+        "Numbered rollback steps: snapshot first, then uninstall/undo, then restore. "
+        "Leave empty to use Neo's default for the item's cloud."))] = "",
+    test_plan: Annotated[str, Field(description=(
+        "How success is verified: health check plus a targeted re-scan. Empty = default."))] = "",
+    cis: Annotated[list[str], Field(description=(
+        "CMDB CI names the change covers (a patch group). Must include the item's own host. "
+        "Empty = just the item's host."))] = [],
+    window_start: Annotated[str, Field(description=(
+        "ISO-8601 start (UTC if no offset). Empty = tier default: P1 in 1h, others tomorrow."))] = "",
+    window_end: Annotated[str, Field(description="ISO-8601 end. Empty = start + 4 hours.")] = "",
+    assignment_group: Annotated[str, Field(description="ServiceNow group to assign. Optional.")] = "",
+) -> dict[str, Any]:
+    """Raise a ServiceNow change request to patch a host (path B), then wait for CAB.
+
+    P1 findings become emergency changes; others are normal changes. The change needs
+    implementation, rollback and test plans and a window. This does NOT approve or run
+    anything -- CAB approves in ServiceNow; use sync_change_approvals to pull the outcome.
+    """
+    store = _store()
+    item = store.get(item_id)
+    if item is None:
+        return {"error": f"no such item: {item_id}"}
+    if cis and item.resource_id not in cis:
+        return {"error": f"cis must include the item's own host {item.resource_id}"}
+    try:
+        start, end = _changes.default_window(item)
+        if window_start:
+            start = _utc(window_start)
+            end = _utc(window_end) if window_end else start + timedelta(hours=4)
+        req = _changes.build_request(item, cis or [item.resource_id], start, end,
+                                     implementation_plan, backout_plan, test_plan,
+                                     assignment_group or None)
+        item = _changes.submit_change(store, _snow(), item_id, req)
+    except (ValueError, ChangeError) as e:
+        return {"error": str(e)}
+    return {
+        "item_id": item.item_id, "change_number": item.refs["chg_number"], "type": req.type,
+        "state": item.state.value, "window_start": start.isoformat(), "window_end": end.isoformat(),
+        "next": "CAB must approve in ServiceNow; then call sync_change_approvals.",
+    }
+
+
+@mcp.tool()
+def sync_change_approvals() -> dict[str, Any]:
+    """Pull change outcomes from ServiceNow into the items waiting on them. Read-only there.
+
+    Patch changes (path B): approved + scheduled/implement -> item APPROVED; cancelled or
+    rejected -> item back to PROPOSED so a new change can be raised.
+    Controls changes (path C): compensating controls count as applied ONLY when the change
+    has been closed successfully by the person who implemented it. A failed or cancelled
+    change leaves the controls unapplied and frees the item for a new change.
+    """
+    try:
+        client = _snow()
+        r = _changes.sync_changes(_store(), client)
+        x = _exceptions.sync_controls_changes(_store(), client)
+    except ChangeError as e:
+        return {"error": str(e)}
+    return {"approved": r.approved, "declined": r.declined,
+            "controls_applied": x.applied, "controls_change_failed": x.failed,
+            "errors": {**r.errors, **x.errors}}
+
+
+@mcp.tool()
+def check_patch_gate(
+    item_id: Annotated[str, Field(description="Remediation item on path B.", pattern=_ITEM_ID_PATTERN)],
+) -> dict[str, Any]:
+    """Report whether patching this item is allowed right now, and on which hosts.
+
+    Read-only and informational: the patch executor re-checks ServiceNow itself at run time.
+    Allowed only when the change is in Implement with approval granted, the time is inside
+    the change window, and the host is on the change's own CI list.
+    """
+    item = _store().get(item_id)
+    if item is None:
+        return {"error": f"no such item: {item_id}"}
+    try:
+        g = _changes.execution_gate(_snow(), item)
+    except ChangeError as e:
+        return {"error": str(e)}
+    return {"item_id": item_id, "allowed": g.allowed, "reason": g.reason, "instance_ids": g.instance_ids}
+
+
+@mcp.tool()
+def mock_advance_change(
+    change_number: Annotated[str, Field(description="Mock change number, e.g. CHG0030001.")],
+    state: Annotated[ChangeState, Field(description="State to move the mock change to.")],
+    approval: Annotated[Optional[str], Field(description="requested | approved | rejected")] = None,
+    close_code: Annotated[Optional[str], Field(description=(
+        "successful | unsuccessful: how the implementer closed the change (state CLOSED)."))] = None,
+) -> dict[str, Any]:
+    """Play the CAB and the change implementer against the MOCK ServiceNow so the flow can be demoed.
+
+    Only usable when NEO_MOCK_MODE is true; refuses against a real instance.
+    """
+    if not MOCK_MODE:
+        return {"error": "mock_advance_change is only available when NEO_MOCK_MODE=true"}
+    if approval not in (None, "requested", "approved", "rejected"):
+        return {"error": "approval must be requested, approved or rejected"}
+    if close_code not in (None, "successful", "unsuccessful"):
+        return {"error": "close_code must be successful or unsuccessful"}
+    try:
+        _snow().set_state(change_number, state, approval, close_code)
+    except ChangeError as e:
+        return {"error": str(e)}
+    return {"change_number": change_number, "state": state.value, "approval": approval,
+            "close_code": close_code}
+
+
+# ---------------------------------------------------------------------------
+# TOOLS — Path C: compensating controls for findings with no vendor patch
+#
+# The agent composes a proposal for the risk owner. It picks controls from the
+# catalog (neo_core/controls.py); the weight is computed by code, never supplied
+# by the agent. It cannot approve an exception, mark controls as applied, or
+# write tags -- the human approves, and a change applies the tags.
+# ---------------------------------------------------------------------------
+
+def _scored_for(item: RemediationItem, scan_id: str) -> ScoredFinding | None:
+    record = _SCORED_STORE.get(scan_id) if scan_id else None
+    for d in (record or {}).get("scored_findings", []):
+        sf = ScoredFinding.model_validate(d)
+        if finding_key(sf.finding) == item.key:
+            return sf
+    return None
+
+
+def _control_rows(ids: list[str]) -> list[dict[str, Any]]:
+    return [{"id": c, "label": _controls.CATALOG[c].label, "weight": _controls.CATALOG[c].weight,
+             "description": _controls.CATALOG[c].description} for c in ids]
+
+
+def _control_proposal(item: RemediationItem, ids: list[str], sf: ScoredFinding | None) -> dict[str, Any]:
+    unknown = [c for c in ids if c not in _controls.CATALOG]
+    if unknown:
+        raise ValueError(f"not in the control catalog: {', '.join(unknown)}")
+    existing = _controls.current_tag(sf.context) if sf else None
+    value, warnings = _controls.merge_tag(existing, ids)
+    return {
+        "item": _item_row(item),
+        "controls": _control_rows(sorted(set(ids))),
+        "combined_effect": _controls.effectiveness(ids),
+        "score_impact": _controls.project(sf, ids) if sf else None,
+        "tag": {
+            "key": _controls.CONTROLS_TAG_KEY, "existing_value": existing, "new_value": value,
+            "warnings": warnings,
+            "command": _controls.tag_command(item.cloud_provider, item.resource_id, value),
+            "note": "Informational. Neo does not write tags: apply through the change that "
+                    "implements the controls. The next scan reads the tag and the exposure "
+                    "factor drops by itself.",
+        },
+        "expiry_cap_days": _exceptions.MAX_EXCEPTION_DAYS.get(item.tier, 180),
+    }
+
+
+@mcp.tool()
+def preview_control_impact(
+    item_id: Annotated[str, Field(description="Path-C remediation item.", pattern=_ITEM_ID_PATTERN)],
+    controls: Annotated[list[str], Field(description=(
+        "Control IDs from the controls://catalog resource, e.g. ['virtual-patch', 'sg-restricted'].")),],
+    scan_id: Annotated[str, Field(description="scan_id already passed to score_findings.")],
+) -> dict[str, Any]:
+    """What-if: the risk score and tier if these controls were in place. Changes nothing.
+
+    Returns the combined effect, before/after score and tier, and the exact tag value and
+    command that would make the exposure factor drop. Use it to find the smallest set of
+    controls worth proposing. If the finding is KEV on a public asset the tier stays P1.
+    """
+    item = _store().get(item_id)
+    if item is None:
+        return {"error": f"no such item: {item_id}"}
+    sf = _scored_for(item, scan_id)
+    if sf is None:
+        return {"error": "finding not in that scored scan", "hint": "Run score_findings(scan_id) first."}
+    try:
+        return _control_proposal(item, controls, sf)
+    except ValueError as e:
+        return {"error": str(e), "catalog": "controls://catalog"}
+
+
+@mcp.tool()
+def draft_risk_exception(
+    item_id: Annotated[str, Field(description="Path-C remediation item.", pattern=_ITEM_ID_PATTERN)],
+    controls: Annotated[list[str], Field(description="Control IDs from controls://catalog.", min_length=1)],
+    justification: Annotated[str, Field(description=(
+        "Why no patch is possible yet and why these controls are enough for now."))] = "",
+    scan_id: Annotated[str, Field(description=(
+        "scan_id already scored; include it so the proposal shows before/after numbers."))] = "",
+) -> dict[str, Any]:
+    """Submit a risk-exception draft for the risk owner and return the proposal to show them.
+
+    Moves the item to IN_REVIEW. Does NOT approve it: a named risk owner approves with an
+    expiry no longer than the tier cap, outside this agent. After approval, call
+    create_controls_change_request: CAB approves that ServiceNow change and a person
+    implements it manually. The controls only count when the change closes successfully;
+    the next scan then reads the tag and lowers the exposure factor.
+    """
+    store = _store()
+    item = store.get(item_id)
+    if item is None:
+        return {"error": f"no such item: {item_id}"}
+    try:
+        _exceptions.draft_exception(store, item_id, controls, justification)
+        item = store.get(item_id)
+        proposal = _control_proposal(item, controls, _scored_for(item, scan_id))
+    except ValueError as e:
+        return {"error": str(e), "catalog": "controls://catalog"}
+    proposal["exception_id"] = item.exception.exception_id
+    proposal["status"] = "awaiting risk-owner approval"
+    proposal["approval"] = (f"neo remediate exception approve {item_id} --approver <NAME> --days <N>"
+                            f"   (N at most {proposal['expiry_cap_days']} for {item.tier})")
+    proposal["after_approval"] = [
+        "agent: create_controls_change_request raises the ServiceNow change (steps + rollback written for you)",
+        "CAB approves the change (emergency CAB for P1)",
+        "a person implements the controls and the tag, then closes the change",
+        "agent: sync_change_approvals records it; the next scan lowers the exposure factor",
+    ]
+    return proposal
+
+
+@mcp.tool()
+def create_controls_change_request(
+    item_id: Annotated[str, Field(description="Path-C item whose exception the risk owner approved.",
+                                  pattern=_ITEM_ID_PATTERN)],
+    implementation_plan: Annotated[str, Field(description=(
+        "Leave empty: Neo writes the steps from the approved controls and the tag to set."))] = "",
+    backout_plan: Annotated[str, Field(description="Empty = default (record, undo in reverse, restore tag).")] = "",
+    test_plan: Annotated[str, Field(description="Empty = default (each control active, tag set, next scan).")] = "",
+    cis: Annotated[list[str], Field(description="CMDB CIs. Empty = just the item's host.")] = [],
+    window_start: Annotated[str, Field(description="ISO-8601 (UTC if no offset). Empty = tier default.")] = "",
+    window_end: Annotated[str, Field(description="ISO-8601. Empty = start + 4 hours.")] = "",
+    assignment_group: Annotated[str, Field(description="ServiceNow group for the implementer. Optional.")] = "",
+) -> dict[str, Any]:
+    """Path C: raise the ServiceNow change that puts an APPROVED exception's controls in place.
+
+    Refused until the risk owner has approved the exception. CAB then approves the change and
+    a person implements it manually -- there is no executor. The controls only count once that
+    change closes successfully (sync_change_approvals reports it). The window must end before
+    the exception expires. P1 becomes an emergency change.
+    """
+    try:
+        start = _utc(window_start) if window_start else None
+        end = _utc(window_end) if window_end else None
+        item = _exceptions.request_controls_change(
+            _store(), _snow(), item_id, start, end, cis or None, implementation_plan,
+            backout_plan, test_plan, assignment_group or None)
+    except (ValueError, ChangeError) as e:
+        return {"error": str(e)}
+    exc = item.exception
+    return {
+        "item_id": item.item_id, "change_number": exc.change_ref, "controls": exc.controls,
+        "tag_to_set": f"{_controls.CONTROLS_TAG_KEY}={exc.tag_value}", "exception_expires": exc.expires,
+        "next": "CAB approves in ServiceNow, a person implements and closes the change, then "
+                "call sync_change_approvals. Nothing is applied until then.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# RESOURCES — Remediation items
+# ---------------------------------------------------------------------------
+
+@mcp.resource("controls://catalog", mime_type="application/json",
+              description="Compensating-control catalog: the only controls that earn credit, "
+                          "with their weights. Weights combine as 1 - prod(1 - w), capped.")
+def controls_catalog() -> str:
+    return json.dumps({"max_effectiveness": _controls.MAX_EFFECTIVENESS,
+                       "controls": _control_rows(list(_controls.CATALOG))})
+
+@mcp.resource("remediation://items", mime_type="application/json",
+              description="Every tracked remediation item: tier, path (A/B/C), state, "
+                          "SLA due date, and linked change number.")
+def remediation_items() -> str:
+    return json.dumps([_item_row(i) for i in _store().list()], default=str)
+
+
+@mcp.resource("remediation://item/{item_id}", mime_type="application/json",
+              description="One remediation item in full: refs (PR / change / exception), "
+                          "scan evidence, and its audit history.")
+def remediation_item(item_id: str) -> str:
+    item = _store().get(item_id)
+    if item is None:
+        return json.dumps({"item_id": item_id, "error": "not_found"})
+    history = [{"at": at, "state": st, "event": ev} for at, st, ev in _store().history(item_id)]
+    return json.dumps({**item.model_dump(mode="json"), "history": history}, default=str)
+
+
+# ---------------------------------------------------------------------------
 # RESOURCES — Threat intel
 # ---------------------------------------------------------------------------
 
@@ -741,6 +1126,70 @@ def score_explanation(
         "3. Suggest which factor the team can realistically reduce fastest "
         "(e.g. add a compensating control, reduce exposure by moving the service off the internet).\n"
         "4. Show what the new score and tier would be if that factor were improved by 50%."
+    )
+
+
+@mcp.prompt()
+def draft_change_request(
+    item_id:     Annotated[str, Field(description="Path-B remediation item, e.g. REM-75B178701B.")],
+    cve_id:      Annotated[str, Field(description="CVE being patched.")],
+    package_name: Annotated[str, Field(description="Vulnerable package.")],
+    fixed_version: Annotated[str, Field(description="First safe version (may be empty).")],
+    resource_id: Annotated[str, Field(description="Host being patched.")],
+    cloud_provider: Annotated[str, Field(description="aws | azure | gcp | onprem.")] = "aws",
+    tier:        Annotated[str, Field(description="Risk tier: P1 / P2 / P3 / P4.")] = "P3",
+) -> str:
+    """Guide the agent to draft the three plans for a ServiceNow change, then raise it."""
+    return (
+        f"Draft a ServiceNow change to patch {cve_id} ({package_name} -> "
+        f"{fixed_version or 'vendor-fixed version'}) on {resource_id} ({cloud_provider}, {tier}). "
+        f"Remediation item: {item_id}.\n\n"
+        "Write three plans, specific to this host and package:\n"
+        "1. implementation_plan -- numbered steps to apply the update through the platform's "
+        "update manager, including any service restart.\n"
+        "2. backout_plan -- numbered: take a snapshot/checkpoint BEFORE patching; undo the update "
+        "(uninstall the KB, or yum/dnf history undo); restore the snapshot if the health check fails.\n"
+        "3. test_plan -- the post-patch health check, and a targeted re-scan showing the CVE absent.\n\n"
+        f"Then call create_change_request(item_id='{item_id}', ...) with those plans. "
+        "A P1 becomes an emergency change automatically. Do not claim the change is approved: "
+        "CAB decides in ServiceNow. Afterwards call sync_change_approvals, and use "
+        "check_patch_gate before anything is patched."
+    )
+
+
+@mcp.prompt()
+def compose_compensating_controls(
+    item_id:       Annotated[str, Field(description="Path-C remediation item, e.g. REM-18859F70DE.")],
+    cve_id:        Annotated[str, Field(description="CVE with no vendor patch yet.")],
+    resource_id:   Annotated[str, Field(description="Affected asset.")],
+    tier:          Annotated[str, Field(description="Current tier: P1 / P2 / P3 / P4.")],
+    exposure:      Annotated[str, Field(description="public | internal | isolated | unknown.")],
+    scan_id:       Annotated[str, Field(description="Scored scan this finding came from.")],
+    target_tier:   Annotated[str, Field(description="Tier the owner wants to reach.")] = "P3",
+) -> str:
+    """Guide the agent to propose compensating controls to a risk owner for an unpatched CVE."""
+    return (
+        f"{cve_id} on {resource_id} ({tier}, {exposure}) has no vendor fix yet [{item_id}]. "
+        f"Propose compensating controls so the owner can accept the risk for a limited time; "
+        f"aim for {target_tier} or better.\n\n"
+        "1. Read controls://catalog. Only those controls earn credit; their weights are fixed "
+        "by policy and combine as independent layers (not added). Never invent a control or a weight.\n"
+        "2. Choose controls that are realistic for THIS asset and exploit path (e.g. a WAF only "
+        "helps a web-facing service). Prefer 'feature-disabled' or 'virtual-patch' when possible.\n"
+        f"3. Call preview_control_impact(item_id='{item_id}', controls=[...], scan_id='{scan_id}') "
+        "and try the smallest set that reaches the target. If it reports tier_pinned (actively "
+        "exploited on a public asset), say plainly that the tier stays P1 and only the score drops.\n"
+        "4. Present to the owner: the controls and why, the before/after score and tier, the exact "
+        "tag and command that makes the exposure factor drop, and the expiry cap.\n"
+        f"5. When the owner agrees, call draft_risk_exception(item_id='{item_id}', controls=[...], "
+        f"justification=..., scan_id='{scan_id}').\n\n"
+        "You cannot approve the exception, apply the controls or write the tag. Tell the owner the "
+        "sequence: they approve; once they have, you raise a ServiceNow change "
+        f"(create_controls_change_request(item_id='{item_id}')); CAB approves it; a PERSON "
+        "implements the controls and sets the tag by hand and closes the change; only then do the "
+        "controls count (sync_change_approvals), and the next scan lowers the exposure factor. "
+        "The exception expires, so the controls must be in place before then; the finding reopens "
+        "if it is still present afterwards."
     )
 
 

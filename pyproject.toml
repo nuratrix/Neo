@@ -9,8 +9,9 @@ requires-python = ">=3.11"
 dependencies = ["httpx", "pydantic>=2", "boto3"]
 
 [project.optional-dependencies]
-mcp = ["mcp[cli]"]
+mcp = ["mcp[cli]>=1.2,<2"]  # server uses the 1.x FastMCP API (renamed in 2.x)
 dev  = ["pytest"]
+agent = ["project-neo[mcp]", "anthropic[mcp]", "python-dotenv", "ipykernel"]  # neo_mcp/neo_agent.ipynb
 
 [project.scripts]
 neo = "neo_core.cli:main"
@@ -19,4 +20,4 @@ neo = "neo_core.cli:main"
 packages = ["neo_core"]
 
 [tool.setuptools.package-dir]
-"neo_core" = "Neo Core"
+"neo_core" = "neo_core"

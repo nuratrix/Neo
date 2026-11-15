@@ -7,3 +7,7 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+
+# data folder
+data/
+kev_backtest.py

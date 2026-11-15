@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 
+from .controls import controls_from_value
 from .models import AssetContext, Finding
 
 MOCK_MODE: bool = os.getenv("NEO_MOCK_MODE", "true").lower() in {"1", "true", "yes"}
@@ -41,12 +42,8 @@ def _criticality_from_labels(labels: dict) -> str:
 
 
 def _controls_from_labels(labels: dict) -> float:
-    try:
-        raw = labels.get(CONTROLS_LABEL_KEY, "0")
-        # GCP labels are strings; interpret values like "0_3" as 0.3
-        return float(raw.replace("_", "."))
-    except (TypeError, ValueError):
-        return 0.0
+    # Control IDs joined by '_', or a legacy decimal written "0_3" (see controls.py).
+    return controls_from_value(labels.get(CONTROLS_LABEL_KEY))
 
 
 # ---------------------------------------------------------------------------

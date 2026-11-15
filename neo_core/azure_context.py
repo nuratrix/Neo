@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 
+from .controls import controls_from_value
 from .models import AssetContext, Finding
 
 MOCK_MODE: bool = os.getenv("NEO_MOCK_MODE", "true").lower() in {"1", "true", "yes"}
@@ -42,10 +43,7 @@ def _criticality_from_tags(tags: dict) -> str:
 
 
 def _controls_from_tags(tags: dict) -> float:
-    try:
-        return float(tags.get(CONTROLS_TAG_KEY, 0.0))
-    except (TypeError, ValueError):
-        return 0.0
+    return controls_from_value(tags.get(CONTROLS_TAG_KEY))
 
 
 # ---------------------------------------------------------------------------

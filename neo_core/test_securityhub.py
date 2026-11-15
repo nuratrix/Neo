@@ -2,7 +2,7 @@
 import os
 import sys
 
-# Add the Neo/ root so that `neo_core` (mapped from "Neo Core/" via pyproject.toml)
+# Add the Neo/ root so that `neo_core` (mapped from "neo_core/" via pyproject.toml)
 # resolves correctly when running the test directly without `pip install -e .`.
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 try:
     from neo_core.aws_securityhub import normalize_asff  # installed package
 except ModuleNotFoundError:
-    from aws_securityhub import normalize_asff  # fallback: run from inside Neo Core/
+    from aws_securityhub import normalize_asff  # fallback: run from inside neo_core/
 
 SAMPLE = {
     "Id": "arn:aws:securityhub:us-east-1:111111111111:finding/abc",

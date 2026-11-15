@@ -1,5 +1,5 @@
 """
-Neo MCP Server — AWS Lambda Function URL handler
+neo_mcp Server — AWS Lambda Function URL handler
 =================================================
 Stateless, multi-tenant MCP server deployed on Lambda.
 
@@ -233,23 +233,51 @@ def get_finding(
 
 @mcp.tool()
 def suppress_finding(
-    finding_id: Annotated[str, Field(description="Finding ID to suppress.")],
-    reason:     Annotated[str, Field(description="Why this finding is being suppressed (audit trail).")] = "",
+    finding_id:       Annotated[str,  Field(description="Finding ID to suppress.")],
+    reason:           Annotated[str,  Field(description="Specific compensating control or evidence. Min 20 chars.", min_length=20)],
+    confirmed_by_human: Annotated[bool, Field(description="Must be true for P1 findings.")] = False,
 ) -> dict[str, Any]:
-    """Suppress a finding — moves it from OPEN to SUPPRESSED (non-destructive; can be reversed).
-
-    Use when: risk accepted, compensating control confirmed, false positive identified.
-    Always record a reason for the audit trail.
-    """
     cid = _customer()
-    _dynamodb.Table(NEO_FINDINGS_TABLE).update_item(
+    table = _dynamodb.Table(NEO_FINDINGS_TABLE)
+
+    # Re-fetch the finding to apply server-side guardrails
+    item = table.get_item(Key={"customer_id": cid, "finding_id": finding_id}).get("Item")
+    if not item:
+        return {"error": "not_found"}
+
+    tier = item.get("tier")
+    kev  = item.get("kev", False)
+    exposure = item.get("exposure", "unknown")
+
+    # Hard rule: KEV on public asset is always P1 — never suppress autonomously
+    if kev and exposure == "public":
+        return {
+            "error": "suppression_blocked",
+            "reason": "KEV finding on public asset is always P1. Human confirmation required.",
+            "requires_human": True,
+        }
+
+    # P1 requires explicit human confirmation flag
+    if tier == "P1" and not confirmed_by_human:
+        return {
+            "error": "suppression_blocked",
+            "reason": "P1 findings require confirmed_by_human=true.",
+            "requires_human": True,
+        }
+
+    # Proceed with suppression + audit trail
+    table.update_item(
         Key={"customer_id": cid, "finding_id": finding_id},
-        UpdateExpression="SET #s = :s, suppressed_at = :t, suppress_reason = :r",
+        UpdateExpression="SET #s = :s, suppressed_at = :t, suppress_reason = :r, autonomous = :a",
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":s": "SUPPRESSED", ":t": _now_iso(), ":r": reason},
+        ExpressionAttributeValues={
+            ":s": "SUPPRESSED", ":t": _now_iso(),
+            ":r": reason, ":a": not confirmed_by_human,
+        },
         ConditionExpression="attribute_exists(finding_id)",
     )
-    return {"suppressed": True, "finding_id": finding_id, "reason": reason}
+    return {"suppressed": True, "finding_id": finding_id, "autonomous": not confirmed_by_human}
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

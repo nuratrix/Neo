@@ -6,6 +6,27 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+# Scanner package-manager labels (Inspector v2 / Security Hub ASFF) -> our ecosystem.
+# "OS" maps to "" because OS packages are patched on the host, not in a repo.
+_ECOSYSTEM = {
+    "OS": "",
+    "JAR": "maven", "POM": "maven",
+    "PYTHONPKG": "pypi", "PIP": "pypi", "PIPENV": "pypi", "POETRY": "pypi",
+    "NODEPKG": "npm", "NPM": "npm", "YARN": "npm",
+    "NUGET": "nuget",
+    "GOBINARY": "golang", "GOMOD": "golang",
+    "CARGO": "cargo",
+    "GEMSPEC": "rubygems", "BUNDLER": "rubygems",
+    "COMPOSER": "composer",
+}
+
+
+def ecosystem_from_package_manager(package_manager: str) -> str:
+    """Map a scanner's package-manager label; unknown labels pass through lower-cased."""
+    pm = (package_manager or "").upper()
+    return _ECOSYSTEM[pm] if pm in _ECOSYSTEM else pm.lower()
+
+
 class Finding(BaseModel):
     finding_id: str = ""
     cve_id: str = ""
@@ -17,6 +38,8 @@ class Finding(BaseModel):
     account_id: str = ""
     region: str = ""
     package_name: str = ""
+    package_ecosystem: str = ""   # maven | pypi | npm | ... | iac | image; "" = OS / installed software
+    fixed_version: str = ""       # first safe version; "" = vendor has not shipped a fix
     fix_available: bool = False
     exploit_available: bool = False
     first_observed: str = ""

@@ -1,6 +1,6 @@
 To run the MCP inspector locally use the following commands in VS Code
 $env:NEO_MOCK_MODE = "true"
-npx @modelcontextprotocol/inspector python "Neo MCP\neo_mcp_server.py"
+npx @modelcontextprotocol/inspector python "neo_mcp\neo_mcp_server.py"
 
 You will see the mcp inspector launched as below
 <img width="1918" height="900" alt="image" src="https://github.com/user-attachments/assets/42cef854-61b2-4307-9610-9497ce62ee5a" />

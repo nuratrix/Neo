@@ -12,10 +12,11 @@ lazy and best-effort -- missing permissions degrade to 'unknown', never crash.
 """
 from __future__ import annotations
 
+from .controls import controls_from_value
 from .models import AssetContext
 
 CRITICALITY_TAG_KEYS = ("Criticality", "criticality", "BusinessCriticality")
-CONTROLS_TAG_KEY = "CompensatingControls"  # tag value 0.0-1.0
+CONTROLS_TAG_KEY = "CompensatingControls"  # control IDs (see controls.py) or a legacy 0.0-1.0
 
 
 def _criticality_from_tags(tags: dict) -> str:
@@ -26,10 +27,7 @@ def _criticality_from_tags(tags: dict) -> str:
 
 
 def _controls_from_tags(tags: dict) -> float:
-    try:
-        return float(tags.get(CONTROLS_TAG_KEY, 0.0))
-    except (TypeError, ValueError):
-        return 0.0
+    return controls_from_value(tags.get(CONTROLS_TAG_KEY))
 
 
 def _ec2_exposure(ec2, instance_id: str) -> tuple[str, dict]:

@@ -9,7 +9,7 @@ admin account or aggregate via Security Hub instead.
 """
 from __future__ import annotations
 
-from .models import Finding
+from .models import Finding, ecosystem_from_package_manager
 
 
 def _cvss_base(pvd: dict) -> float:
@@ -35,27 +35,32 @@ def pull_findings(region: str = "us-east-1", max_results: int = 1000, profile: s
     findings: list[Finding] = []
     for page in paginator.paginate(filterCriteria=filter_criteria):
         for f in page.get("findings", []):
-            pvd = f.get("packageVulnerabilityDetails", {}) or {}
-            resources = f.get("resources", []) or [{}]
-            res = resources[0]
-            pkgs = pvd.get("vulnerablePackages", []) or []
-            findings.append(
-                Finding(
-                    finding_id=f.get("findingArn", ""),
-                    cve_id=pvd.get("vulnerabilityId", ""),
-                    title=f.get("title", ""),
-                    severity=f.get("severity", "UNKNOWN"),
-                    cvss_base=_cvss_base(pvd),
-                    resource_id=res.get("id", ""),
-                    resource_type=res.get("type", ""),
-                    account_id=f.get("awsAccountId", ""),
-                    region=res.get("region", region),
-                    package_name=pkgs[0].get("name", "") if pkgs else "",
-                    fix_available=f.get("fixAvailable", "") == "YES",
-                    exploit_available=f.get("exploitAvailable", "") == "YES",
-                    first_observed=str(f.get("firstObservedAt", "")),
-                )
-            )
+            findings.append(normalize_finding(f, region))
             if len(findings) >= max_results:
                 return findings
     return findings
+
+
+def normalize_finding(f: dict, default_region: str = "us-east-1") -> Finding:
+    pvd = f.get("packageVulnerabilityDetails", {}) or {}
+    resources = f.get("resources", []) or [{}]
+    res = resources[0]
+    pkgs = pvd.get("vulnerablePackages", []) or []
+    pkg = pkgs[0] if pkgs else {}
+    return Finding(
+        finding_id=f.get("findingArn", ""),
+        cve_id=pvd.get("vulnerabilityId", ""),
+        title=f.get("title", ""),
+        severity=f.get("severity", "UNKNOWN"),
+        cvss_base=_cvss_base(pvd),
+        resource_id=res.get("id", ""),
+        resource_type=res.get("type", ""),
+        account_id=f.get("awsAccountId", ""),
+        region=res.get("region", default_region),
+        package_name=pkg.get("name", ""),
+        package_ecosystem=ecosystem_from_package_manager(pkg.get("packageManager", "")),
+        fixed_version=pkg.get("fixedInVersion", "") or "",
+        fix_available=f.get("fixAvailable", "") == "YES",
+        exploit_available=f.get("exploitAvailable", "") == "YES",
+        first_observed=str(f.get("firstObservedAt", "")),
+    )

@@ -28,7 +28,7 @@ CONTEXT MAP FILE FORMAT
   "db-prod-01.corp": {
     "exposure": "internal",
     "criticality": "high",
-    "compensating_controls": 0.3
+    "compensating_controls": "virtual-patch_sg-restricted"   (or a legacy number such as 0.3)
   }
 }
 
@@ -45,6 +45,7 @@ from pathlib import Path
 
 import httpx
 
+from .controls import controls_from_value
 from .models import AssetContext, Finding
 
 MOCK_MODE: bool = os.getenv("NEO_MOCK_MODE", "true").lower() in {"1", "true", "yes"}
@@ -66,11 +67,14 @@ def _context_from_map(resource_id: str, context_map: dict) -> AssetContext | Non
     entry = context_map.get(resource_id)
     if not entry:
         return None
+    raw = entry.get("compensating_controls", 0.0)
     return AssetContext(
         resource_id=resource_id,
         exposure=entry.get("exposure", "unknown"),
         criticality=entry.get("criticality", "unknown"),
-        compensating_controls=float(entry.get("compensating_controls", 0.0)),
+        # A number (legacy) or control IDs like "virtual-patch_sg-restricted" (see controls.py).
+        compensating_controls=controls_from_value(str(raw)),
+        tags={"CompensatingControls": str(raw)} if isinstance(raw, str) else {},
     )
 
 
