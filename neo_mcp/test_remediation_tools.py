@@ -42,7 +42,8 @@ def _open_window():
 def test_tools_resources_and_prompt_are_registered_with_constraints():
     tools = {t.name: t for t in asyncio.run(srv.mcp.list_tools())}
     for name in ("track_remediation", "create_change_request", "sync_change_approvals",
-                 "check_patch_gate", "mock_advance_change", "execute_patch", "close_verified_changes"):
+                 "check_patch_gate", "mock_advance_change", "execute_patch", "close_verified_changes",
+                 "record_agent_suggestion"):
         assert name in tools, name
     # The agent gets no tool to approve a change or advance an item. It can patch, but only
     # through the executor's gate, and the tool defaults to a dry run.
@@ -112,6 +113,20 @@ def test_execute_patch_dry_run_then_patch_then_close_on_rescan_evidence():
     assert srv.execute_patch(LOG4J, dry_run=False)["outcome"] == "deployed"
     assert json.loads(srv.remediation_item(LOG4J))["state"] == "DEPLOYED"       # not REMEDIATED
     assert srv.close_verified_changes()["closed_successful"] == []              # no scan evidence yet
+
+
+def test_agent_suggestion_is_recorded_without_changing_state():
+    srv.track_remediation(_fresh())
+    before = json.loads(srv.remediation_item(LOG4J))
+    out = srv.record_agent_suggestion(LOG4J, "Path B is right: patch in tonight's window.", "path")
+    assert out["suggestions"] == 1
+    after = json.loads(srv.remediation_item(LOG4J))
+    assert after["state"] == before["state"] and after["suggestions"][0]["kind"] == "path"
+    assert "kind must be" in srv.record_agent_suggestion(LOG4J, "x", "approve")["error"]
+    assert "no such item" in srv.record_agent_suggestion("REM-0000000000", "x")["error"]
+    for i in range(25):
+        srv.record_agent_suggestion(LOG4J, f"note {i}")
+    assert len(json.loads(srv.remediation_item(LOG4J))["suggestions"]) == srv.MAX_SUGGESTIONS
 
 
 def test_execute_patch_refuses_outside_mock_mode():

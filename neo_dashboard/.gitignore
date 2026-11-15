@@ -1,0 +1,9 @@
+node_modules/
+web/dist/
+.venv/
+.env
+__pycache__/
+.pytest_cache/
+*.log
+demo.db
+demo.db.snow.json

@@ -739,6 +739,36 @@ def check_patch_gate(
     return {"item_id": item_id, "allowed": g.allowed, "reason": g.reason, "instance_ids": g.instance_ids}
 
 
+SUGGESTION_KINDS = ("fix", "path", "controls", "triage", "other")
+MAX_SUGGESTIONS = 20
+
+
+@mcp.tool()
+def record_agent_suggestion(
+    item_id: Annotated[str, Field(description="Remediation item the advice is about.", pattern=_ITEM_ID_PATTERN)],
+    text: Annotated[str, Field(min_length=1, max_length=2000, description=(
+        "Your advice for the people who will act: what to do, why, and what to check first."))],
+    kind: Annotated[str, Field(description="fix | path | controls | triage | other")] = "other",
+) -> dict[str, Any]:
+    """Record your recommendation on an item so the dashboard and reviewers can see it.
+
+    Advisory only: this changes no state and approves nothing. Use it after triage or planning,
+    for example "Path B is right: log4j-core 2.17.1 is the fixed version; patch i-0public-web-01
+    in tonight's window, and check the app still starts". Keeps the latest 20 per item.
+    """
+    if kind not in SUGGESTION_KINDS:
+        return {"error": f"kind must be one of {', '.join(SUGGESTION_KINDS)}"}
+    store = _store()
+    item = store.get(item_id)
+    if item is None:
+        return {"error": f"no such item: {item_id}"}
+    now = datetime.now(timezone.utc).isoformat()
+    item.suggestions = [*item.suggestions, {"at": now, "author": "neo-agent", "kind": kind, "text": text}][-MAX_SUGGESTIONS:]
+    item.updated_at = now
+    store.save(item, f"agent suggestion recorded ({kind})")
+    return {"item_id": item_id, "suggestions": len(item.suggestions)}
+
+
 @mcp.tool()
 def execute_patch(
     item_id: Annotated[str, Field(description="Remediation item on path B in state APPROVED.", pattern=_ITEM_ID_PATTERN)],

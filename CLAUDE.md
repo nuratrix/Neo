@@ -36,7 +36,8 @@ neo_mcp/           MCP server wrapping the pipeline for Claude / Bedrock agents
                      prompts (triage_finding, remediation_plan, draft_change_request)
 ```
 
-## Install
+neo_dashboard/     read-only dashboard: items by tier P1-P4 with path A/B/C recommendation and agent suggestion (FastAPI api/ + React web/)
+
 
 ```bash
 pip install -e ".[mcp]"
@@ -109,6 +110,14 @@ Tag (AWS/Azure `CompensatingControls`, GCP label `compensating_controls`) lists 
 `neo_core/controls.py`, joined by `_`, e.g. `virtual-patch_sg-restricted`. The weights live in code,
 combine as `1 - prod(1 - w)`, and are capped at 0.9. Unknown IDs earn nothing. A plain number
 (`0.3`, GCP `0_3`) still works but is unverified. A new control needs a person to add it to the catalog.
+
+## Run the dashboard
+
+```bash
+cd neo_dashboard/api && uv sync && uv run python seed_demo.py ../demo.db   # demo data (mock flow), or use your own DB
+NEO_REMEDIATION_DB=../demo.db uv run uvicorn app:app --port 8790           # Nura uses 8787, so Neo does not
+cd ../web && npm install && npm run dev                                    # http://localhost:5180
+```
 
 ## Run the MCP server
 

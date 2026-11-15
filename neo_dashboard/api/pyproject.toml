@@ -1,0 +1,20 @@
+[project]
+name = "neo-dashboard-api"
+version = "0.1.0"
+description = "Read-only API behind the findings dashboard (Neo remediation items; other products through sources)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

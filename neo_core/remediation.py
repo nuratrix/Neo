@@ -105,6 +105,8 @@ class RemediationItem(BaseModel):
     fixed_version: str = ""
     cloud_provider: str = ""
     controls_tag: str = ""               # CompensatingControls tag on the asset at the last scan
+    # What the agent advised (advisory text only; it changes no state): {at, author, kind, text}.
+    suggestions: list[dict[str, str]] = Field(default_factory=list)
     tier: str
     risk_score: float = 0.0
     path: Path
