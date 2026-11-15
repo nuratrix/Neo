@@ -26,6 +26,7 @@ neo_core/          neo_core Python package
   exceptions.py    path C: draft / approve (named owner, tier-capped expiry) / re-route on vendor fix
   servicenow.py    change-management client: ChangeClient interface, offline mock, Table API client
   changes.py       path B: raise change (plans + CIs), pull CAB outcome, execution gate for the patcher
+  patcher.py       path B executor: gate -> snapshot -> patch -> health check -> rollback; closes the change on re-scan evidence (mock backend only)
   cli.py           `neo scan` and `neo remediate` commands
   examples/mock_findings.json  demo fixture (no AWS / network needed)
 
@@ -62,6 +63,10 @@ neo remediate --db neo.db change create REM-XXXX [--ci i-0abc --start 2026-12-01
 neo remediate --db neo.db change mock-advance CHG0030001 SCHEDULED --approval approved   # play the CAB
 neo remediate --db neo.db change sync     # CAB approval -> item APPROVED
 neo remediate --db neo.db change gate     # may the patcher run right now, and on which hosts?
+neo remediate --db neo.db change patch REM-XXXX --dry-run   # then without --dry-run; --fail-at apply|health|rollback simulates failures
+neo remediate --db neo.db change patch-all   # every APPROVED item the gate allows; halts at the first failure
+neo remediate --db neo.db sync --mock "neo_core/examples/mock_rescan.json"   # re-scan: DEPLOYED -> REMEDIATED
+neo remediate --db neo.db change close    # close changes on scan evidence (successful / unsuccessful)
 
 # Path C (no vendor patch yet) — approval is a human gate, `advance` cannot skip it:
 neo remediate --db neo.db exception controls                       # the catalog and its weights
@@ -72,6 +77,18 @@ neo remediate --db neo.db change mock-advance CHG0030001 CLOSED --approval appro
 neo remediate --db neo.db change sync                   # controls count only once that change closes successfully
 neo remediate --db neo.db exception expiring --days 7
 ```
+
+## Path B executor rules
+
+The executor only touches hosts `execution_gate` returns, re-checked after the snapshot. A good
+patch run leaves the item DEPLOYED, not REMEDIATED; only a re-scan closes it, and only then is the
+ServiceNow change closed successful (with the scan as evidence). A failed apply/health check rolls
+back, closes the change unsuccessful and sends the item back to PROPOSED (new change needed). A
+failed rollback escalates, leaves the change open and blocks the item until a person clears it.
+Each backend step has a time limit (900 s default): a snapshot timeout leaves the host alone, a patch
+timeout stops for a person (no rollback under a running package manager), a health-check timeout rolls
+back. `run_patch_batch` patches hosts one at a time and halts after the first failure (canary).
+Only a mock backend exists; `execute_patch` (MCP, dry run by default) refuses outside mock mode.
 
 ## Path C flow (matches `Neo — Remediation Layer.png`)
 
@@ -109,10 +126,11 @@ NEO_MCP_TRANSPORT=streamable-http python "neo_mcp/neo_mcp_server.py"
 ## Run the tests
 
 ```bash
-pytest "neo_core/test_securityhub.py" "neo_core/test_remediation.py" "neo_core/test_connectors.py" "neo_core/test_servicenow.py" "neo_core/test_controls.py" -v
+pytest "neo_core/test_securityhub.py" "neo_core/test_remediation.py" "neo_core/test_connectors.py" "neo_core/test_servicenow.py" "neo_core/test_controls.py" "neo_core/test_patcher.py" -v
 # or without pytest:
 python "neo_core/test_servicenow.py"
 python "neo_core/test_controls.py"
+python "neo_core/test_patcher.py"
 python "neo_mcp/test_remediation_tools.py"   # MCP tools; needs the mcp extra
 python "neo_core/test_securityhub.py"
 python "neo_core/test_remediation.py"

@@ -38,7 +38,7 @@ import json
 import os
 from datetime import timedelta
 
-from . import changes, controls, exceptions, reporter, servicenow
+from . import changes, controls, exceptions, patcher, reporter, servicenow
 from .closeout import sync_scan
 from .models import AssetContext, Enrichment, Finding
 from .remediation import IllegalTransition, State, utcnow
@@ -235,6 +235,29 @@ def _change(store, args) -> None:
             g = changes.execution_gate(client, it)
             print(f"{it.item_id}  {it.refs.get('chg_number', '-')}  "
                   f"{'MAY PATCH ' + ','.join(g.instance_ids) if g.allowed else 'BLOCKED: ' + g.reason}")
+    elif c == "patch":
+        if not isinstance(client, servicenow.MockChangeClient):
+            raise SystemExit("no live patch backend yet: patch only runs against the mock "
+                             "(NEO_MOCK_MODE=true)")
+        run = patcher.run_patch(store, client, patcher.MockPatchBackend(args.fail_at), args.item_id, args.dry_run)
+        for s in run.steps:
+            print(f"  {s}")
+        print(f"{run.item_id}: {run.outcome}" + (f" - {run.detail}" if run.detail else ""))
+    elif c == "patch-all":
+        if not isinstance(client, servicenow.MockChangeClient):
+            raise SystemExit("no live patch backend yet: patch only runs against the mock "
+                             "(NEO_MOCK_MODE=true)")
+        ids = [i.item_id for i in store.list(State.APPROVED)]
+        for run in patcher.run_patch_batch(store, client, patcher.MockPatchBackend(args.fail_at), ids, args.dry_run):
+            print(f"{run.item_id}: {run.outcome}" + (f" - {run.detail}" if run.detail else ""))
+        if not ids:
+            print("no APPROVED items")
+    elif c == "close":
+        r = patcher.close_verified_changes(store, client)
+        print(f"changes closed: successful {len(r.successful)}  unsuccessful {len(r.unsuccessful)}  "
+              f"errors {len(r.errors)}")
+        for k, v in r.errors.items():
+            print(f"  {k}: {v}")
     elif c == "mock-advance":
         if not isinstance(client, servicenow.MockChangeClient):
             raise SystemExit("mock-advance only works with NEO_MOCK_MODE=true")
@@ -358,6 +381,15 @@ def main(argv=None):
     cc.add_argument("--assignment-group", default=None)
     csub.add_parser("sync", help="pull CAB outcomes from ServiceNow into waiting items")
     csub.add_parser("gate", help="show whether each approved item may be patched right now")
+    cp = csub.add_parser("patch", help="run the patch executor on an APPROVED item (mock backend only)")
+    cp.add_argument("item_id")
+    cp.add_argument("--dry-run", action="store_true", help="check the gate and say what would happen")
+    cp.add_argument("--fail-at", choices=["snapshot", "apply", "health", "rollback"], default=None,
+                    help="mock backend: simulate a failure at this step")
+    ca = csub.add_parser("patch-all", help="patch every APPROVED item the gate allows, halting at the first failure")
+    ca.add_argument("--dry-run", action="store_true")
+    ca.add_argument("--fail-at", choices=["snapshot", "apply", "health", "rollback"], default=None)
+    csub.add_parser("close", help="close changes on re-scan evidence (REMEDIATED -> successful, REOPENED -> unsuccessful)")
     cm = csub.add_parser("mock-advance", help="mock mode only: play the CAB / change manager")
     cm.add_argument("number")
     cm.add_argument("state", choices=[s.value for s in ChangeState])

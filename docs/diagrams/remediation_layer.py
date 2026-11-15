@@ -171,14 +171,14 @@ card(BX, 782, BW, 95, "HUM", RED, "CAB approval",
      ["normal change → CAB · P1 → emergency CAB", "low-risk patch groups → pre-approved standard change"], border=RED, bw=2)
 arrow(BC, 877, 918, "approved → Implement", RED, RED)
 card(BX, 918, BW, 95, "λ", ORANGE, "Patch executor (code, no model)",
-     ["runs only if: change state = Implement · inside the window", "· instance list = the approved CIs, nothing else"],
+     ["runs only if: state = Implement · inside the window · host", "on the approved CI list · re-checked after the snapshot"],
      ic_size=19)
 arrow(BC, 1013, 1054, "exact instance IDs")
 card(BX, 1054, BW, 95, "UPD", SLATE, "Update managers",
      ["AWS SSM Patch Manager · Azure Update Manager", "GCP VM Manager · WSUS / MECM · Red Hat Satellite"])
 arrow(BC, 1149, 1190, "vendor repos · yum / apt / WSUS")
 card(BX, 1190, BW, 95, "λ", ORANGE, "Post-patch health check (code)",
-     ["healthy → close change with evidence", "unhealthy → roll back · change marked failed"], ic_size=19)
+     ["healthy → DEPLOYED · change closes after a clean re-scan", "unhealthy → roll back · change closed unsuccessful"], ic_size=19)
 
 # ---------------------------------------------------------------- Path C (redesigned)
 CX, CW, CC = 1249, 462, 1480

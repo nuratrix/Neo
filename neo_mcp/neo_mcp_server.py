@@ -110,6 +110,7 @@ from neo_core import (
     risk_engine as _risk_engine,
     changes as _changes,
     closeout as _closeout,
+    patcher as _patcher,
     controls as _controls,
     exceptions as _exceptions,
     servicenow as _servicenow,
@@ -736,6 +737,46 @@ def check_patch_gate(
     except ChangeError as e:
         return {"error": str(e)}
     return {"item_id": item_id, "allowed": g.allowed, "reason": g.reason, "instance_ids": g.instance_ids}
+
+
+@mcp.tool()
+def execute_patch(
+    item_id: Annotated[str, Field(description="Remediation item on path B in state APPROVED.", pattern=_ITEM_ID_PATTERN)],
+    dry_run: Annotated[bool, Field(description=(
+        "True (default): only check the gate and say what would happen. Set false to patch."))] = True,
+    simulate_failure_at: Annotated[Optional[str], Field(description=(
+        "Mock only: snapshot | apply | health | rollback."))] = None,
+) -> dict[str, Any]:
+    """Run the patch executor on one approved path-B item, inside its change window.
+
+    Re-checks ServiceNow itself (change in Implement, approved, inside the window, host on the
+    change's CI list), snapshots, patches, health-checks, and rolls back on failure. Success
+    leaves the item DEPLOYED, NOT remediated: only a later re-scan closes it. Always do a dry
+    run first and show the user. Today only a mock backend exists, so a live instance is refused.
+    """
+    if not MOCK_MODE:
+        return {"error": "no live patch backend is configured; execute_patch only runs against the mock"}
+    try:
+        run = _patcher.run_patch(_store(), _snow(), _patcher.MockPatchBackend(simulate_failure_at),
+                                 item_id, dry_run)
+    except (ValueError, ChangeError) as e:
+        return {"error": str(e)}
+    return {"item_id": run.item_id, "outcome": run.outcome, "detail": run.detail, "steps": run.steps}
+
+
+@mcp.tool()
+def close_verified_changes() -> dict[str, Any]:
+    """Close path-B ServiceNow changes on re-scan evidence.
+
+    Items REMEDIATED by a re-scan after Neo patched them get their change closed successful,
+    with the scan as evidence; items REOPENED get theirs closed unsuccessful. Run after
+    track_remediation. Safe to repeat: each change is closed once.
+    """
+    try:
+        r = _patcher.close_verified_changes(_store(), _snow())
+    except ChangeError as e:
+        return {"error": str(e)}
+    return {"closed_successful": r.successful, "closed_unsuccessful": r.unsuccessful, "errors": r.errors}
 
 
 @mcp.tool()

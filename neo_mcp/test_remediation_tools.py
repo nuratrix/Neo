@@ -42,10 +42,12 @@ def _open_window():
 def test_tools_resources_and_prompt_are_registered_with_constraints():
     tools = {t.name: t for t in asyncio.run(srv.mcp.list_tools())}
     for name in ("track_remediation", "create_change_request", "sync_change_approvals",
-                 "check_patch_gate", "mock_advance_change"):
+                 "check_patch_gate", "mock_advance_change", "execute_patch", "close_verified_changes"):
         assert name in tools, name
-    # The agent gets no tool to approve a change, advance an item, or patch.
-    assert not {"approve_change", "advance_item", "execute_patch"} & set(tools)
+    # The agent gets no tool to approve a change or advance an item. It can patch, but only
+    # through the executor's gate, and the tool defaults to a dry run.
+    assert not {"approve_change", "advance_item"} & set(tools)
+    assert tools["execute_patch"].inputSchema["properties"]["dry_run"]["default"] is True
     assert tools["create_change_request"].inputSchema["properties"]["item_id"]["pattern"].startswith("^REM-")
     assert any(p.name == "draft_change_request" for p in asyncio.run(srv.mcp.list_prompts()))
     uris = {str(r.uri) for r in asyncio.run(srv.mcp.list_resources())}
@@ -96,6 +98,28 @@ def test_change_request_flow_end_to_end_in_mock():
     detail = json.loads(srv.remediation_item(LOG4J))
     assert detail["refs"]["chg_number"] == chg
     assert [h["state"] for h in detail["history"]][-2:] == ["IN_REVIEW", "APPROVED"]
+
+
+def test_execute_patch_dry_run_then_patch_then_close_on_rescan_evidence():
+    srv.track_remediation(_fresh())
+    chg = srv.create_change_request(LOG4J, window_start=_open_window())["change_number"]
+    assert srv.execute_patch(LOG4J)["outcome"] == "refused"                     # not approved: gate says no
+    srv.mock_advance_change(chg, srv.ChangeState.SCHEDULED, "approved")
+    srv.sync_change_approvals()
+    srv.mock_advance_change(chg, srv.ChangeState.IMPLEMENT, "approved")
+    assert srv.execute_patch(LOG4J)["outcome"] == "dry-run"                     # default touches nothing
+    assert json.loads(srv.remediation_item(LOG4J))["state"] == "APPROVED"
+    assert srv.execute_patch(LOG4J, dry_run=False)["outcome"] == "deployed"
+    assert json.loads(srv.remediation_item(LOG4J))["state"] == "DEPLOYED"       # not REMEDIATED
+    assert srv.close_verified_changes()["closed_successful"] == []              # no scan evidence yet
+
+
+def test_execute_patch_refuses_outside_mock_mode():
+    old, srv.MOCK_MODE = srv.MOCK_MODE, False
+    try:
+        assert "no live patch backend" in srv.execute_patch(LOG4J, dry_run=False)["error"]
+    finally:
+        srv.MOCK_MODE = old
 
 
 def test_change_request_refusals_return_errors_not_exceptions():

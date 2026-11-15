@@ -39,7 +39,8 @@ TRANSITIONS: dict[State, set[State]] = {
     _S.PROPOSED:         {_S.IN_REVIEW, _S.REMEDIATED},
     # Path C: the risk owner's approval is IN_REVIEW -> EXCEPTION_ACTIVE; there is no way around it.
     _S.IN_REVIEW:        {_S.APPROVED, _S.EXCEPTION_ACTIVE, _S.PROPOSED, _S.REMEDIATED},
-    _S.APPROVED:         {_S.DEPLOYED, _S.REMEDIATED},
+    # PROPOSED again = the patch run failed and was rolled back; it needs a new change.
+    _S.APPROVED:         {_S.DEPLOYED, _S.REMEDIATED, _S.PROPOSED},
     _S.DEPLOYED:         {_S.REMEDIATED, _S.REOPENED},
     # PROPOSED again = vendor fix appeared, item re-routed to path A or B.
     _S.EXCEPTION_ACTIVE: {_S.PROPOSED, _S.REMEDIATED, _S.REOPENED},

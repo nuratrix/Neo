@@ -93,7 +93,9 @@ def submit_change(
     if req.end_date <= now:
         raise ValueError("change window is in the past")
     rec = client.create_change(req)
-    item.move(State.IN_REVIEW, now, refs={**item.refs, "chg_number": rec.number, "chg_sys_id": rec.sys_id})
+    stale = ("patched_at", "snapshot", "patch_blocked")      # left over from an earlier change/run
+    item.move(State.IN_REVIEW, now, refs={**{k: v for k, v in item.refs.items() if k not in stale},
+                                          "chg_number": rec.number, "chg_sys_id": rec.sys_id})
     store.save(item, f"change {rec.number} raised ({req.type}) for {len(req.cis)} CI(s)")
     return item
 
