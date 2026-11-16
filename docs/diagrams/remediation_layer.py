@@ -104,7 +104,7 @@ for i, (col, lab, desc) in enumerate([(SLATE, "Deterministic", "code, rules, que
 # ---------------------------------------------------------------- top row
 box(64, 170, 299, 79, style=f"border:2px solid {TEAL};background:{TEAL_BG};border-radius:8px")
 text(80, 192, "← Layer 2: Neo agent", 14, "#1B2430", 700)
-text(80, 211, "remediation_plan · fixed_version", 13, "#0A7F6B")
+text(80, 211, "remediation_plan · agent suggestions", 13, "#0A7F6B")
 hline(210, 363, 645, TEAL)
 text(380, 186, "proposed fix", 13, TEAL)
 
@@ -157,8 +157,8 @@ for i, l in enumerate(["• A maintained, standard tool surface instead of custo
 
 # ---------------------------------------------------------------- Path B
 BX, BW, BC = 649, 511, 904
-card(BX, 350, BW, 95, "AI", TEAL, "Neo agent drafts the change",
-     ["instance IDs · patch (KB or package @ fixed_version)", "maintenance window · test evidence"], border="#7FD0C2")
+card(BX, 350, BW, 95, "AI", TEAL, "Neo agent drafts one change per fix group",
+     ["code groups hosts by fix · non-prod and prod apart", "patch @ fixed_version · window · test evidence"], border="#7FD0C2")
 arrow(BC, 445, 487)
 card(BX, 487, BW, 94, "CHG", SLATE, "ServiceNow change request",
      ["created via ServiceNow MCP / Table API", "CIs from the CMDB · change risk set from the tier"])
@@ -171,14 +171,16 @@ card(BX, 782, BW, 95, "HUM", RED, "CAB approval",
      ["normal change → CAB · P1 → emergency CAB", "low-risk patch groups → pre-approved standard change"], border=RED, bw=2)
 arrow(BC, 877, 918, "approved → Implement", RED, RED)
 card(BX, 918, BW, 95, "λ", ORANGE, "Patch executor (code, no model)",
-     ["runs only if: state = Implement · inside the window · host", "on the approved CI list · re-checked after the snapshot"],
+     ["gate: Implement · approved · in window · host on the CI list", "snapshot → patch → health check · 900 s limit per step",
+      "one host at a time (canary) · halt on the first failure"],
      ic_size=19)
 arrow(BC, 1013, 1054, "exact instance IDs")
 card(BX, 1054, BW, 95, "UPD", SLATE, "Update managers",
      ["AWS SSM Patch Manager · Azure Update Manager", "GCP VM Manager · WSUS / MECM · Red Hat Satellite"])
 arrow(BC, 1149, 1190, "vendor repos · yum / apt / WSUS")
 card(BX, 1190, BW, 95, "λ", ORANGE, "Post-patch health check (code)",
-     ["healthy → DEPLOYED · change closes after a clean re-scan", "unhealthy → roll back · change closed unsuccessful"], ic_size=19)
+     ["healthy → DEPLOYED · failed → rolled back, change closed unsuccessful", "rollback fails → blocked for a person, change stays open",
+      "change closes successful only on re-scan evidence"], ic_size=19)
 
 # ---------------------------------------------------------------- Path C (redesigned)
 CX, CW, CC = 1249, 462, 1480
@@ -201,7 +203,8 @@ rows = [
      ["change implementer applies the controls and sets the tag", "records evidence · closes the change"], {},
      "controls in place"),
     ("CTX", SLATE, "Layer 1 rescores",
-     ["tag lists control IDs · code computes the weight", "exposure factor drops · tier may fall (KEV + public: P1)"], {},
+     ["tag lists control IDs · code computes the weight", "exposure factor drops · tier may fall (KEV + public: P1)",
+      "tag drift: control missing → flagged, credit withdrawn"], {},
      "exception runs until expiry"),
     ("λ", ORANGE, "Expiry watch (code)",
      ["vendor fix appears on a scan → re-route to A or B", "exception expires → finding reopens"], {}, ""),
@@ -243,8 +246,8 @@ hline(1528, 857, 919)
 card(919, BY, 318, BH, "DDB", MAGENTA, "Findings updated",
      ["status · remediated_at", "evidence: scan_id · PR / CHG number"], border=BLUE_DEEP, bw=2, bg="#E6F3F7")
 hline(1528, 1237, 1299)
-card(1299, BY, 398, BH, "SLA", SLATE, "Posture and SLA",
-     ["risk summary drops · SLA met or missed", "next posture briefing reflects the fix"])
+card(1299, BY, 398, BH, "SLA", SLATE, "Posture, SLA and dashboard",
+     ["read-only dashboard: P1–P4 by path A / B / C", "with the agent's suggestion · SLA met or missed"])
 
 page = f"""<!doctype html><html><head><meta charset="utf-8"><style>
 {f"@font-face {{ font-family: Inter; src: url('{FONT}') format('woff2'); font-weight: 400 700; }}" if FONT else ""}

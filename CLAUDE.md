@@ -91,7 +91,7 @@ timeout stops for a person (no rollback under a running package manager), a heal
 back. `run_patch_batch` patches hosts one at a time and halts after the first failure (canary).
 Only a mock backend exists; `execute_patch` (MCP, dry run by default) refuses outside mock mode.
 
-## Path C flow (matches `Neo — Remediation Layer.png`)
+## Path C flow (matches `docs/diagrams/Remediation Layer.png`)
 
 Agent composes controls → risk owner approves (named owner, expiry capped by tier) → Neo raises a
 ServiceNow change (implementation steps, rollback, CIs; P1 = emergency; window must end before the

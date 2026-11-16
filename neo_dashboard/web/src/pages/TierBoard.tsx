@@ -2,17 +2,57 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { HumanBadge, PathBadge, SlaBadge, StateBadge, TierBadge } from "../components/Badges";
-import { EMPTY, PATHS, STATES, TIERS, applyFilters, byTier, fromParams, toParams, toggleCell, type Filters } from "../filters";
+import { EMPTY, PATHS, STATES, TIERS, activePath, applyFilters, byTier, fromParams, toParams, toggleCell, type Filters } from "../filters";
 import { day, label, relativeTime } from "../format";
 import type { ItemSummary, Meta, Overview } from "../types";
 
 const WINDOWS = [7, 30, 90, 180, 365];
 const TIER_NAME: Record<string, string> = { P1: "Critical", P2: "High", P3: "Medium", P4: "Low" };
 const TIER_SLA: Record<string, string> = { P1: "7 days", P2: "30 days", P3: "90 days", P4: "180 days" };
-const PATH_HELP: Record<string, string> = {
-  A: "Code & images: a pull request",
-  B: "Hosts: a ServiceNow change and a patch",
-  C: "No vendor fix: compensating controls and an exception",
+interface PathInfo {
+  tab: string;
+  help: string;
+  brief: string;
+  route: string[];
+}
+const PATH_INFO: Record<string, PathInfo> = {
+  A: {
+    tab: "Configurations",
+    help: "Code & images: a pull request",
+    brief:
+      "Weaknesses that live in source: application dependencies, infrastructure-as-code, container images and configuration files. The fix is a code change, so it goes through your normal review and deploy pipeline.",
+    route: [
+      "Neo opens a pull request that bumps the dependency or corrects the configuration.",
+      "A reviewer approves and merges it (In review → Approved).",
+      "The pipeline deploys the change (Deployed).",
+      "The next scan must no longer find the vulnerability before the item closes (Remediated).",
+    ],
+  },
+  B: {
+    tab: "Server Patches",
+    help: "Hosts: a ServiceNow change and a patch",
+    brief:
+      "Vulnerable packages on running servers where the vendor has published a fixed version. Hosts are changed under change management, never directly.",
+    route: [
+      "Neo raises a ServiceNow change with the patch plan, rollback plan and affected servers (CIs).",
+      "The change board (CAB) approves it and sets the maintenance window.",
+      "Inside the window the patcher takes a snapshot, applies the patch and health-checks each host, one at a time; a failure rolls back and stops the run.",
+      "The item is Deployed; the next scan closes it (Remediated) and Neo closes the change with the scan as evidence.",
+    ],
+  },
+  C: {
+    tab: "Compensating Controls",
+    help: "No vendor fix: compensating controls and an exception",
+    brief:
+      "Findings with no vendor fix yet. The risk is reduced with other controls, such as a virtual patch or a restricted security group, under a time-limited, owner-approved exception.",
+    route: [
+      "The agent drafts the controls and the justification.",
+      "A named risk owner approves the exception; its expiry is capped by the tier.",
+      "Neo raises a ServiceNow change (P1 is an emergency change) and the change board approves it.",
+      "A person implements the controls and closes the change. Only then do they count.",
+      "The next scan reads the asset's tag and the exposure drops. If a vendor fix ships or the exception expires, the item is re-routed.",
+    ],
+  },
 };
 
 export default function TierBoard({ meta }: { meta: Meta }) {
@@ -41,13 +81,19 @@ export default function TierBoard({ meta }: { meta: Meta }) {
   const update = (patch: Partial<Filters>) => set({ ...filters, ...patch });
   const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
-  const items = data?.items ?? [];
-  const shown = useMemo(() => applyFilters(items, filters), [items, filters]);
+  const allItems = data?.items ?? [];
+  const tab = activePath(filters);
+  const info = PATH_INFO[tab];
+  const items = useMemo(() => allItems.filter((i) => i.path === tab), [allItems, tab]);
+  const shown = useMemo(() => applyFilters(items, { ...filters, paths: [tab] }), [items, filters, tab]);
   const groups = useMemo(() => byTier(shown), [shown]);
   const tierCount = (t: string) => items.filter((i) => i.tier === t).length;
   const filtered = shown.length !== items.length;
-  const cellOn = (t: string, p: string) =>
-    filters.tiers.length === 1 && filters.tiers[0] === t && filters.paths.length === 1 && filters.paths[0] === p;
+  const cellOn = (t: string, p: string) => filters.tiers.length === 1 && filters.tiers[0] === t && tab === p;
+  const pathCount = (p: string) => allItems.filter((i) => i.path === p).length;
+  const waiting = items.filter((i) => i.needs_human).length;
+  const unadvised = items.filter((i) => !i.suggestion_count && i.state !== "REMEDIATED").length;
+  const overdue = items.filter((i) => i.sla_status === "overdue").length;
 
   return (
     <>
@@ -60,11 +106,11 @@ export default function TierBoard({ meta }: { meta: Meta }) {
           </button>
         ))}
         <button className={`tile tile-warn ${filters.human ? "on" : ""}`} onClick={() => update({ human: !filters.human })}>
-          <span className="tile-value">{data?.needs_human ?? 0}</span>
+          <span className="tile-value">{waiting}</span>
           <span className="tile-label">Waiting on a person</span>
         </button>
         <button className={`tile tile-muted ${filters.noSuggestion ? "on" : ""}`} onClick={() => update({ noSuggestion: !filters.noSuggestion })}>
-          <span className="tile-value">{data?.no_suggestion ?? 0}</span>
+          <span className="tile-value">{unadvised}</span>
           <span className="tile-label">No agent suggestion yet</span>
         </button>
       </div>
@@ -77,7 +123,7 @@ export default function TierBoard({ meta }: { meta: Meta }) {
               <tr>
                 <th />
                 {PATHS.map((p) => (
-                  <th key={p}><PathBadge path={p} /><div className="sub">{PATH_HELP[p]}</div></th>
+                  <th key={p}><PathBadge path={p} /><div className="sub">{PATH_INFO[p].tab}</div></th>
                 ))}
               </tr>
             </thead>
@@ -104,12 +150,6 @@ export default function TierBoard({ meta }: { meta: Meta }) {
       <div className="toolbar">
         <input className="search" type="search" placeholder="Search CVE, package, resource, suggestion…"
                value={filters.q} onChange={(e) => update({ q: e.target.value })} />
-        <div className="chips" aria-label="Path">
-          {PATHS.map((p) => (
-            <button key={p} className={`chip ${filters.paths.includes(p) ? "on" : ""}`}
-                    onClick={() => update({ paths: toggle(filters.paths, p) })}>Path {p}</button>
-          ))}
-        </div>
         <label className="select">State
           <select value={filters.state} onChange={(e) => update({ state: e.target.value })}>
             <option value="">All</option>
@@ -128,11 +168,30 @@ export default function TierBoard({ meta }: { meta: Meta }) {
 
       {error && <div className="banner error">{error}</div>}
       {data?.errors.map((e) => <div key={e} className="banner warn">{e}</div>)}
+
+      <div className="tabs" role="tablist" aria-label="Remediation path">
+        {PATHS.map((p) => (
+          <button key={p} role="tab" id={`tab-${p}`} aria-selected={tab === p} aria-controls="path-panel"
+                  className={`tab ${tab === p ? "on" : ""}`}
+                  onClick={() => set({ ...filters, paths: [p] })}>
+            {PATH_INFO[p].tab} <span className="tab-count">{pathCount(p)}</span>
+          </button>
+        ))}
+      </div>
+      <section id="path-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="card brief">
+        <h2><PathBadge path={tab} /> {info.tab} <span className="muted">· {info.help}</span></h2>
+        <p>{info.brief}</p>
+        <h3>Route to remediation</h3>
+        <ol className="route">
+          {info.route.map((s) => <li key={s}>{s}</li>)}
+        </ol>
+      </section>
+
       {data && (
         <p className="count-line">
           Showing <strong>{shown.length}</strong> of {items.length}
-          {data.overdue > 0 && <span className="overdue"> · {data.overdue} past their SLA</span>}
-          {filtered && <button className="link" onClick={() => set(EMPTY)}>Clear filters</button>}
+          {overdue > 0 && <span className="overdue"> · {overdue} past their SLA</span>}
+          {filtered && <button className="link" onClick={() => set({ ...EMPTY, paths: [tab] })}>Clear filters</button>}
         </p>
       )}
       {!data && !error && <p className="empty">Loading…</p>}

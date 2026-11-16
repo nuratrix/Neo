@@ -1,14 +1,12 @@
-# Renders docs/diagrams/remediation_layer.py to "Neo — Remediation Layer.png" (1800x1680).
+# Renders docs/diagrams/remediation_layer.py to "Remediation Layer.png" (1800x1680).
 #
-#   powershell -File docs/diagrams/render.ps1                      # writes to the repo root
+#   powershell -File docs/diagrams/render.ps1                      # writes next to this script
 #   powershell -File docs/diagrams/render.ps1 -Out C:\tmp\x.png -Font C:\fonts\inter.woff2
 #
 # Needs Python and Edge or Chrome. -Font is an optional Inter .woff2 (the diagrams use Inter);
 # without it the system sans-serif is used and text widths shift slightly.
 param(
-    # The name has an em dash; build it from its code point so Windows PowerShell 5.1 (which reads
-    # BOM-less UTF-8 as ANSI) cannot mangle this file.
-    [string]$Out = (Join-Path (Split-Path $PSScriptRoot -Parent | Split-Path -Parent) ("Neo " + [char]0x2014 + " Remediation Layer.png")),
+    [string]$Out = (Join-Path $PSScriptRoot "Remediation Layer.png"),
     [string]$Font = "",
     [string]$Python = "python"
 )

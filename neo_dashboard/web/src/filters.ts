@@ -38,10 +38,15 @@ export function byTier(items: ItemSummary[]): { tier: string; items: ItemSummary
   return [...known, ...(other.length ? [{ tier: "other", items: other }] : [])];
 }
 
-/** Click a tier/path cell: already selected -> clear both, otherwise select exactly that cell. */
+/** The path tab that is open: the first selected path, else Path A. */
+export function activePath(f: Filters): string {
+  return f.paths[0] ?? PATHS[0];
+}
+
+/** Click a tier/path cell: open that path's tab and show only that tier; clicking again clears the tier (the tab stays). */
 export function toggleCell(f: Filters, tier: string, path: string): Filters {
-  const on = f.tiers.length === 1 && f.tiers[0] === tier && f.paths.length === 1 && f.paths[0] === path;
-  return { ...f, tiers: on ? [] : [tier], paths: on ? [] : [path] };
+  const on = f.tiers.length === 1 && f.tiers[0] === tier && activePath(f) === path;
+  return { ...f, tiers: on ? [] : [tier], paths: [path] };
 }
 
 export function toParams(f: Filters, days: number, defaultDays: number): URLSearchParams {

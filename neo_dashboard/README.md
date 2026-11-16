@@ -48,6 +48,38 @@ npm run dev            # http://localhost:5180
 
 **Your own data:** point `NEO_REMEDIATION_DB` at the file `neo remediate --db <file>` writes, or at the MCP server's database (default `neo_remediation.db` in the repo root). `api/.env.example` lists the settings.
 
+## Populating the dashboard with mock data
+
+No AWS, ServiceNow or network access is needed. There are two ways.
+
+**Option 1: the seed script (recommended).** It drives Neo's mock scan, mock ServiceNow and patcher to build a complete demo database:
+
+```powershell
+cd neo_dashboard/api
+uv sync
+uv run python seed_demo.py ../demo.db
+$env:NEO_REMEDIATION_DB = "../demo.db"; uv run uvicorn app:app --port 8790
+```
+
+It creates:
+- open items across P1–P4 and Paths A, B and C (from both mock fixtures);
+- one closed item: a P1 host patched, confirmed by a re-scan, its change closed;
+- one change waiting for the change board, and one Path C exception approved but waiting for a person to implement the controls change;
+- demo agent suggestions on the P1–P3 items, and none on P4, so you can see both states.
+
+It writes `demo.db` and `demo.db.snow.json` (both gitignored). Delete them and run the script again for a clean start.
+
+**Option 2: the CLI.** From the repo root:
+
+```powershell
+neo remediate --db neo.db sync --mock "neo_core/examples/mock_findings.json"
+$env:NEO_REMEDIATION_DB = "neo.db"
+```
+
+This gives you items and routing only: no agent suggestions, no closed item, no pending changes. Add suggestions through the MCP tool `record_agent_suggestion`, and use the other `neo remediate` commands (see the repo's CLAUDE.md) to move items through changes and re-scans.
+
+The dashboard is read-only and never creates a database: if `NEO_REMEDIATION_DB` points at a missing file, it shows a "no remediation database" banner.
+
 **Single process:** `npm run build` in `web/`; the API then serves the built app at its own port.
 
 ## Read-only, by construction

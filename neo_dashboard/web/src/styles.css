@@ -171,6 +171,13 @@ table.matrix { border-collapse: collapse; }
 .cell:disabled { color: var(--text-2); background: var(--surface-2); cursor: default; }
 .cell.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .tier-section { margin-top: 18px; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-top: 16px; flex-wrap: wrap; }
+.tab { padding: 9px 16px; border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; background: transparent; color: var(--text-2); cursor: pointer; font: inherit; font-weight: 600; margin-bottom: -1px; }
+.tab.on { background: var(--surface); color: var(--accent); border-color: var(--border); }
+.tab-count { margin-left: 6px; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); font-size: 12px; }
+.brief { border-top-left-radius: 0; margin-top: 0; }
+.brief h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-2); margin: 14px 0 6px; }
+.route { margin: 0; padding-left: 22px; display: grid; gap: 4px; }
 .tier-head { display: flex; align-items: center; gap: 8px; font-size: 16px; }
 .empty.small { padding: 12px; }
 ul.items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }

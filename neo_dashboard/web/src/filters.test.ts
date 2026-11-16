@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY, applyFilters, byTier, fromParams, toParams, toggleCell } from "./filters";
+import { EMPTY, activePath, applyFilters, byTier, fromParams, toParams, toggleCell } from "./filters";
 import type { ItemSummary } from "./types";
 
 function item(over: Partial<ItemSummary>): ItemSummary {
@@ -37,10 +37,15 @@ describe("filters", () => {
   it("groups by tier in order, keeping empty tiers", () => {
     expect(byTier(items).map((g) => [g.tier, g.items.length])).toEqual([["P1", 1], ["P2", 1], ["P3", 0], ["P4", 1]]);
   });
-  it("clicking a tier x path cell selects it, clicking again clears it", () => {
-    const on = toggleCell(EMPTY, "P2", "A");
-    expect(on).toMatchObject({ tiers: ["P2"], paths: ["A"] });
-    expect(toggleCell(on, "P2", "A")).toMatchObject({ tiers: [], paths: [] });
+  it("clicking a tier x path cell opens that tab and tier, clicking again clears only the tier", () => {
+    const on = toggleCell(EMPTY, "P2", "C");
+    expect(on).toMatchObject({ tiers: ["P2"], paths: ["C"] });
+    expect(toggleCell(on, "P2", "C")).toMatchObject({ tiers: [], paths: ["C"] });
+    expect(toggleCell({ ...on, paths: ["A"] }, "P2", "C")).toMatchObject({ tiers: ["P2"], paths: ["C"] });
+  });
+  it("the open tab defaults to Path A", () => {
+    expect(activePath(EMPTY)).toBe("A");
+    expect(activePath({ ...EMPTY, paths: ["B"] })).toBe("B");
   });
   it("round-trips through the URL and drops bad values", () => {
     const f = { ...EMPTY, q: "x", tiers: ["P1", "P3"], paths: ["C"], state: "IN_REVIEW", human: true };
