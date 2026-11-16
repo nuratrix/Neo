@@ -38,7 +38,7 @@ import json
 import os
 from datetime import timedelta
 
-from . import changes, controls, exceptions, patcher, reporter, servicenow
+from . import change_groups, changes, controls, exceptions, patcher, reporter, servicenow
 from .closeout import sync_scan
 from .models import AssetContext, Enrichment, Finding
 from .remediation import IllegalTransition, State, utcnow
@@ -252,10 +252,49 @@ def _change(store, args) -> None:
             print(f"{run.item_id}: {run.outcome}" + (f" - {run.detail}" if run.detail else ""))
         if not ids:
             print("no APPROVED items")
+    elif c == "plan":
+        groups = change_groups.plan_groups(store, max_hosts=args.max_hosts)
+        if not groups:
+            print("no path-B items waiting for a change")
+        for g in groups:
+            print(f"{g.group_id}  {g.environment:<7} {g.tier}  {g.fix} ({g.cloud_provider})  "
+                  f"{len(g.hosts)} host(s): {', '.join(g.hosts)}  CVEs: {', '.join(g.cve_ids)}")
+    elif c == "create-group":
+        from datetime import datetime
+        g = change_groups.find_group(store, args.group_id, args.max_hosts)
+        start, end = change_groups.default_group_window(g)
+        if args.start:
+            start = datetime.fromisoformat(args.start)
+            end = datetime.fromisoformat(args.end) if args.end else start + timedelta(hours=4)
+        req = change_groups.build_group_request(
+            g, start, end, args.implementation, args.backout, args.test, args.assignment_group,
+            change_groups.nonprod_changes_for(store, g))
+        items = change_groups.submit_group_change(store, client, g, req)
+        print(f"{g.group_id}: {items[0].refs['chg_number']} raised ({req.type}, {g.environment}) for "
+              f"{len(g.hosts)} host(s), {len(items)} item(s); window {start:%Y-%m-%d %H:%M} to {end:%H:%M} UTC")
+    elif c == "patch-change":
+        if not isinstance(client, servicenow.MockChangeClient):
+            raise SystemExit("no live patch backend yet: patch only runs against the mock "
+                             "(NEO_MOCK_MODE=true)")
+        backend = patcher.MockPatchBackend(args.fail_at, set(args.fail_host) if args.fail_host else None)
+        r = patcher.run_change(store, client, backend, args.number, args.wave_size, args.dry_run)
+        for w, wave in enumerate(r.waves):
+            print(f"{'canary' if w == 0 else f'wave {w}'}:")
+            for run in wave:
+                print(f"  {run.item_id}: {run.outcome}" + (f" - {run.detail}" if run.detail else ""))
+        if r.halted:
+            print(f"halted: {r.halted}")
+        if r.released:
+            print(f"released for a new change: {', '.join(r.released)}")
+        if r.closed:
+            print(f"{args.number} closed {r.closed}")
+    elif c == "waive":
+        items = change_groups.waive_precedence(store, args.item_id, args.approver, args.reason)
+        print(f"non-production precedence waived by {args.approver} on {len(items)} item(s)")
     elif c == "close":
         r = patcher.close_verified_changes(store, client)
-        print(f"changes closed: successful {len(r.successful)}  unsuccessful {len(r.unsuccessful)}  "
-              f"errors {len(r.errors)}")
+        print(f"changes closed: successful {len(r.successful)}  with issues {len(r.with_issues)}  "
+              f"unsuccessful {len(r.unsuccessful)}  errors {len(r.errors)}")
         for k, v in r.errors.items():
             print(f"  {k}: {v}")
     elif c == "mock-advance":
@@ -389,7 +428,28 @@ def main(argv=None):
     ca = csub.add_parser("patch-all", help="patch every APPROVED item the gate allows, halting at the first failure")
     ca.add_argument("--dry-run", action="store_true")
     ca.add_argument("--fail-at", choices=["snapshot", "apply", "health", "rollback"], default=None)
-    csub.add_parser("close", help="close changes on re-scan evidence (REMEDIATED -> successful, REOPENED -> unsuccessful)")
+    cpl = csub.add_parser("plan", help="group waiting path-B items: one change per fix, prod and non-prod apart")
+    cpl.add_argument("--max-hosts", type=int, default=change_groups.MAX_HOSTS_PER_CHANGE)
+    cg = csub.add_parser("create-group", help="raise ONE change for a planned fix group (see `change plan`)")
+    cg.add_argument("group_id")
+    cg.add_argument("--max-hosts", type=int, default=change_groups.MAX_HOSTS_PER_CHANGE)
+    cg.add_argument("--start", metavar="ISO8601", help="window start (default: tier-based)")
+    cg.add_argument("--end", metavar="ISO8601", help="window end (default: start + 4h)")
+    cg.add_argument("--implementation", default="")
+    cg.add_argument("--backout", default="")
+    cg.add_argument("--test", default="")
+    cg.add_argument("--assignment-group", default=None)
+    cpc = csub.add_parser("patch-change", help="patch every approved host on a change: canary, then waves (mock only)")
+    cpc.add_argument("number")
+    cpc.add_argument("--wave-size", type=int, default=patcher.DEFAULT_WAVE_SIZE)
+    cpc.add_argument("--dry-run", action="store_true")
+    cpc.add_argument("--fail-at", choices=["snapshot", "apply", "health", "rollback"], default=None)
+    cpc.add_argument("--fail-host", action="append", metavar="HOST", help="mock: fail only on this host; repeatable")
+    cw = csub.add_parser("waive", help="a named person lets production go without a non-production run")
+    cw.add_argument("item_id", nargs="+")
+    cw.add_argument("--approver", required=True)
+    cw.add_argument("--reason", required=True)
+    csub.add_parser("close", help="close each change once every host has an outcome on re-scan evidence")
     cm = csub.add_parser("mock-advance", help="mock mode only: play the CAB / change manager")
     cm.add_argument("number")
     cm.add_argument("state", choices=[s.value for s in ChangeState])

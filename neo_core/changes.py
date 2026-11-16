@@ -8,6 +8,9 @@ The Neo agent drafts the change content (judgment). Everything here is code:
     execution_gate    the check a patch executor must pass before touching anything
 
 DEPLOYED is set by the patch executor after it runs, not here.
+
+This module raises one change per item. For many hosts with the same fix, raise one change
+per fix group instead (change_groups.py): production and non-production apart, non-production first.
 """
 from __future__ import annotations
 
@@ -66,6 +69,23 @@ def build_request(
     )
 
 
+def validate_request(req: ChangeRequest, now: datetime) -> None:
+    """What every change must have before ServiceNow sees it. Raises ValueError."""
+    for name in ("implementation_plan", "backout_plan", "test_plan"):
+        if not getattr(req, name).strip():
+            raise ValueError(f"change needs a non-empty {name}")
+    if not req.cis:
+        raise ValueError("change needs at least one CI")
+    if req.end_date <= req.start_date:
+        raise ValueError("change window must end after it starts")
+    if req.end_date <= now:
+        raise ValueError("change window is in the past")
+
+
+STALE_RUN_REFS = ("patched_at", "snapshot", "patch_blocked", "rolled_back_under", "halted_under",
+                  "chg_group", "chg_closed")   # left over from an earlier change or run
+
+
 def _get(store: RemediationStore, item_id: str) -> RemediationItem:
     item = store.get(item_id)
     if item is None:
@@ -83,18 +103,9 @@ def submit_change(
         raise ValueError(f"{item_id} is on path {item.path.value}, not B")
     if item.state not in (State.PROPOSED, State.REOPENED):
         raise ValueError(f"{item_id} is {item.state.value}; a change is only raised from PROPOSED or REOPENED")
-    for name in ("implementation_plan", "backout_plan", "test_plan"):
-        if not getattr(req, name).strip():
-            raise ValueError(f"change needs a non-empty {name}")
-    if not req.cis:
-        raise ValueError("change needs at least one CI")
-    if req.end_date <= req.start_date:
-        raise ValueError("change window must end after it starts")
-    if req.end_date <= now:
-        raise ValueError("change window is in the past")
+    validate_request(req, now)
     rec = client.create_change(req)
-    stale = ("patched_at", "snapshot", "patch_blocked")      # left over from an earlier change/run
-    item.move(State.IN_REVIEW, now, refs={**{k: v for k, v in item.refs.items() if k not in stale},
+    item.move(State.IN_REVIEW, now, refs={**{k: v for k, v in item.refs.items() if k not in STALE_RUN_REFS},
                                           "chg_number": rec.number, "chg_sys_id": rec.sys_id})
     store.save(item, f"change {rec.number} raised ({req.type}) for {len(req.cis)} CI(s)")
     return item
@@ -113,14 +124,19 @@ def sync_changes(
     """Pull CAB outcomes from ServiceNow into the items waiting on them."""
     now = now or utcnow()
     out = ChangeSync()
+    seen: dict[str, object] = {}            # one ServiceNow read per change, however many items share it
     for item in store.list(State.IN_REVIEW):
         number = item.refs.get("chg_number")
         if item.path is not Path.B or not number:
             continue
-        try:
-            rec = client.get_change(number)
-        except ChangeError as e:
-            out.errors[item.item_id] = str(e)
+        if number not in seen:
+            try:
+                seen[number] = client.get_change(number)
+            except ChangeError as e:
+                seen[number] = e
+        rec = seen[number]
+        if isinstance(rec, ChangeError):
+            out.errors[item.item_id] = str(rec)
             continue
         if rec.state is ChangeState.CANCELED or rec.approval == "rejected":
             item.move(State.PROPOSED, now)

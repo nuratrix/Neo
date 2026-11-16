@@ -74,7 +74,8 @@ def _context_from_map(resource_id: str, context_map: dict) -> AssetContext | Non
         criticality=entry.get("criticality", "unknown"),
         # A number (legacy) or control IDs like "virtual-patch_sg-restricted" (see controls.py).
         compensating_controls=controls_from_value(str(raw)),
-        tags={"CompensatingControls": str(raw)} if isinstance(raw, str) else {},
+        tags={**({"CompensatingControls": str(raw)} if isinstance(raw, str) else {}),
+              **({"Environment": str(entry["environment"])} if entry.get("environment") else {})},
     )
 
 
@@ -113,7 +114,8 @@ def _snow_query(
         raw_env = rec.get("u_environment", "").lower()
         exposure = "public" if raw_env in ("prod", "production", "internet-facing") else "internal"
         crit = rec.get("u_criticality", "unknown").lower()
-        return AssetContext(resource_id=ip_address, exposure=exposure, criticality=crit)
+        tags = {"Environment": rec["u_environment"]} if rec.get("u_environment") else {}
+        return AssetContext(resource_id=ip_address, exposure=exposure, criticality=crit, tags=tags)
     except Exception:
         return None
 

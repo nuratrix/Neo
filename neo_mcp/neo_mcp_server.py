@@ -109,6 +109,7 @@ from neo_core import (
     enrich as _enrich,
     risk_engine as _risk_engine,
     changes as _changes,
+    change_groups as _change_groups,
     closeout as _closeout,
     patcher as _patcher,
     controls as _controls,
@@ -668,8 +669,10 @@ def create_change_request(
     window_end: Annotated[str, Field(description="ISO-8601 end. Empty = start + 4 hours.")] = "",
     assignment_group: Annotated[str, Field(description="ServiceNow group to assign. Optional.")] = "",
 ) -> dict[str, Any]:
-    """Raise a ServiceNow change request to patch a host (path B), then wait for CAB.
+    """Raise a ServiceNow change request to patch ONE item's host (path B), then wait for CAB.
 
+    When several hosts need the same fix, prefer plan_change_groups + create_group_change_request:
+    one change per fix, with production and non-production in separate changes.
     P1 findings become emergency changes; others are normal changes. The change needs
     implementation, rollback and test plans and a window. This does NOT approve or run
     anything -- CAB approves in ServiceNow; use sync_change_approvals to pull the outcome.
@@ -736,7 +739,91 @@ def check_patch_gate(
         g = _changes.execution_gate(_snow(), item)
     except ChangeError as e:
         return {"error": str(e)}
-    return {"item_id": item_id, "allowed": g.allowed, "reason": g.reason, "instance_ids": g.instance_ids}
+    order = _change_groups.precedence_gate(_store(), item)
+    allowed = g.allowed and order.allowed
+    return {"item_id": item_id, "allowed": allowed,
+            "reason": g.reason if not g.allowed else order.reason,
+            "instance_ids": g.instance_ids if allowed else [],
+            "environment": item.environment, "precedence": order.reason}
+
+
+@mcp.tool()
+def plan_change_groups(
+    max_hosts: Annotated[int, Field(ge=1, le=500, description="Most hosts per change; larger groups split.")] = _change_groups.MAX_HOSTS_PER_CHANGE,
+) -> dict[str, Any]:
+    """Group the path-B items waiting for a change: one change per fix, read-only.
+
+    Grouping is code: same cloud, same package and fixed version, same environment. Production
+    and non-production are ALWAYS separate changes, and non-production groups are listed first
+    because production hosts cannot be patched until the same fix has run on non-production.
+    The group's tier is its highest item tier (one P1 host makes it an emergency change).
+    """
+    groups = _change_groups.plan_groups(_store(), max_hosts=max_hosts)
+    return {"groups": [g.summary() for g in groups],
+            "next": "Raise non-production groups first with create_group_change_request(group_id)."}
+
+
+@mcp.tool()
+def create_group_change_request(
+    group_id: Annotated[str, Field(pattern=r"^GRP-[0-9A-F]{10}$", description="A group_id from plan_change_groups.")],
+    implementation_plan: Annotated[str, Field(description="Numbered steps; empty = Neo's canary-and-waves default.")] = "",
+    backout_plan: Annotated[str, Field(description="Per-host rollback; empty = Neo's default for the cloud.")] = "",
+    test_plan: Annotated[str, Field(description="Health check plus targeted re-scan; empty = default.")] = "",
+    window_start: Annotated[str, Field(description="ISO-8601 start. Empty = tier default.")] = "",
+    window_end: Annotated[str, Field(description="ISO-8601 end. Empty = sized to the number of hosts.")] = "",
+    assignment_group: Annotated[str, Field(description="ServiceNow group to assign. Optional.")] = "",
+    max_hosts: Annotated[int, Field(ge=1, le=500)] = _change_groups.MAX_HOSTS_PER_CHANGE,
+) -> dict[str, Any]:
+    """Raise ONE ServiceNow change for every host in a planned fix group, then wait for CAB.
+
+    The change lists every host as an affected CI and nothing else. A production change states
+    that it executes only after non-production is patched and soaked, citing the non-production
+    change numbers. This approves and runs nothing; CAB approves in ServiceNow.
+    """
+    store = _store()
+    try:
+        g = _change_groups.find_group(store, group_id, max_hosts)
+        start, end = _change_groups.default_group_window(g)
+        if window_start:
+            start = _utc(window_start)
+            end = _utc(window_end) if window_end else start + timedelta(hours=4)
+        req = _change_groups.build_group_request(
+            g, start, end, implementation_plan, backout_plan, test_plan, assignment_group or None,
+            _change_groups.nonprod_changes_for(store, g))
+        items = _change_groups.submit_group_change(store, _snow(), g, req)
+    except (ValueError, ChangeError) as e:
+        return {"error": str(e)}
+    return {"group_id": g.group_id, "change_number": items[0].refs["chg_number"], "type": req.type,
+            "environment": g.environment, "hosts": g.hosts, "item_ids": [i.item_id for i in items],
+            "window_start": start.isoformat(), "window_end": end.isoformat(),
+            "next": "CAB must approve in ServiceNow; then call sync_change_approvals."}
+
+
+@mcp.tool()
+def execute_change(
+    change_number: Annotated[str, Field(pattern=r"^CHG\d{7}$", description="An approved path-B change.")],
+    dry_run: Annotated[bool, Field(description="True (default): only say what would happen. False patches.")] = True,
+    wave_size: Annotated[int, Field(ge=1, le=50, description="Hosts per wave after the canary.")] = _patcher.DEFAULT_WAVE_SIZE,
+    simulate_failure_at: Annotated[Optional[str], Field(description="Mock only: snapshot | apply | health | rollback.")] = None,
+    simulate_failure_host: Annotated[Optional[str], Field(description="Mock only: fail just this host.")] = None,
+) -> dict[str, Any]:
+    """Patch every approved host on one change: a canary host first, then waves.
+
+    Every host passes the same gates as execute_patch, plus production waits for non-production.
+    The run halts at the first failed host; that host is rolled back and hosts not yet touched are
+    released for a new change. Patched hosts are DEPLOYED, not remediated: a re-scan decides, and
+    close_verified_changes closes the change once every host has an outcome. Dry-run first.
+    """
+    if not MOCK_MODE:
+        return {"error": "no live patch backend is configured; execute_change only runs against the mock"}
+    try:
+        backend = _patcher.MockPatchBackend(simulate_failure_at, {simulate_failure_host} if simulate_failure_host else None)
+        r = _patcher.run_change(_store(), _snow(), backend, change_number, wave_size, dry_run)
+    except (ValueError, ChangeError) as e:
+        return {"error": str(e)}
+    return {"change_number": change_number,
+            "waves": [[{"item_id": x.item_id, "outcome": x.outcome, "detail": x.detail} for x in w] for w in r.waves],
+            "halted": r.halted, "released": r.released, "closed": r.closed}
 
 
 SUGGESTION_KINDS = ("fix", "path", "controls", "triage", "other")
@@ -796,17 +883,18 @@ def execute_patch(
 
 @mcp.tool()
 def close_verified_changes() -> dict[str, Any]:
-    """Close path-B ServiceNow changes on re-scan evidence.
+    """Close path-B ServiceNow changes on re-scan evidence, once every host on a change has an outcome.
 
-    Items REMEDIATED by a re-scan after Neo patched them get their change closed successful,
-    with the scan as evidence; items REOPENED get theirs closed unsuccessful. Run after
-    track_remediation. Safe to repeat: each change is closed once.
+    All patched hosts clean on re-scan -> successful; some clean, some still vulnerable, rolled
+    back or not reached -> successful with issues; none -> unsuccessful. Each host's scan is cited.
+    Run after track_remediation. Safe to repeat: each change is closed once.
     """
     try:
         r = _patcher.close_verified_changes(_store(), _snow())
     except ChangeError as e:
         return {"error": str(e)}
-    return {"closed_successful": r.successful, "closed_unsuccessful": r.unsuccessful, "errors": r.errors}
+    return {"closed_successful": r.successful, "closed_with_issues": r.with_issues,
+            "closed_unsuccessful": r.unsuccessful, "errors": r.errors}
 
 
 @mcp.tool()

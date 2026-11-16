@@ -9,6 +9,7 @@ out-of-box values, but instances customise them):
   * change_request.state numeric values        -> DEFAULT_STATE_MAP / state_map=
   * CMDB CI names match what the scanner reports (instance ID vs hostname)
   * closing straight to state 3 may be blocked by your state model (Review first)
+  * close_code values: successful | successful_issues | unsuccessful (out-of-box choices)
 Anything the instance rejects is raised as ChangeError, never swallowed.
 """
 from __future__ import annotations
@@ -76,12 +77,20 @@ class ChangeRecord(BaseModel):
     close_code: str = ""
 
 
+def close_code(successful: bool, with_issues: bool = False) -> str:
+    """ServiceNow close code. "With issues" = some hosts fixed, some rolled back or still vulnerable."""
+    if not successful:
+        return "unsuccessful"
+    return "successful_issues" if with_issues else "successful"
+
+
 class ChangeClient(Protocol):
     def create_change(self, req: ChangeRequest) -> ChangeRecord: ...
     def get_change(self, number: str) -> ChangeRecord: ...
     def affected_cis(self, number: str) -> list[str]: ...
     def add_work_note(self, number: str, note: str) -> None: ...
-    def close_change(self, number: str, successful: bool, notes: str) -> ChangeRecord: ...
+    def close_change(self, number: str, successful: bool, notes: str,
+                     with_issues: bool = False) -> ChangeRecord: ...
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +143,11 @@ class MockChangeClient:
         self._rec(number)["notes"].append(note)
         self._save()
 
-    def close_change(self, number: str, successful: bool, notes: str) -> ChangeRecord:
+    def close_change(self, number: str, successful: bool, notes: str,
+                     with_issues: bool = False) -> ChangeRecord:
         c = self._rec(number)
         c["state"] = ChangeState.CLOSED.value
-        c["close_code"] = "successful" if successful else "unsuccessful"
+        c["close_code"] = close_code(successful, with_issues)
         c["notes"].append(notes)
         self._save()
         return self._record(c)
@@ -247,10 +257,11 @@ class ServiceNowClient:
     def add_work_note(self, number: str, note: str) -> None:
         self._call("PATCH", f"{self.CHANGE}/{self._row(number)['sys_id']}", json={"work_notes": note})
 
-    def close_change(self, number: str, successful: bool, notes: str) -> ChangeRecord:
+    def close_change(self, number: str, successful: bool, notes: str,
+                     with_issues: bool = False) -> ChangeRecord:
         row = self._call("PATCH", f"{self.CHANGE}/{self._row(number)['sys_id']}", json={
             "state": next(k for k, v in self._state_map.items() if v is ChangeState.CLOSED),
-            "close_code": "successful" if successful else "unsuccessful", "close_notes": notes,
+            "close_code": close_code(successful, with_issues), "close_notes": notes,
         }, params={"sysparm_exclude_reference_link": "true"})
         return self._record(row)
 

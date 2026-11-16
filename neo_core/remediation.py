@@ -61,6 +61,28 @@ class IllegalTransition(ValueError):
     pass
 
 
+# Environment decides change separation and ordering: CAB never mixes production and
+# non-production hosts in one change, and non-production is patched first (change_groups.py).
+ENVIRONMENT_TAG_KEYS = ("Environment", "environment", "Env", "env", "u_environment")
+_NONPROD = {"dev", "development", "test", "testing", "qa", "uat", "sit", "stage", "staging",
+            "preprod", "pre-prod", "nonprod", "non-prod", "sandbox", "lab", "perf"}
+_PROD = {"prod", "production", "prd", "live"}
+
+
+def environment_from_tags(tags: dict[str, str]) -> tuple[str, str]:
+    """(prod | nonprod, where it came from). Anything unknown is treated as production:
+    the safe side, because production waits for non-production and never the reverse."""
+    for k in ENVIRONMENT_TAG_KEYS:
+        if k in tags:
+            v = str(tags[k]).strip().lower()
+            if v in _NONPROD:
+                return "nonprod", f"tag {k}={tags[k]}"
+            if v in _PROD:
+                return "prod", f"tag {k}={tags[k]}"
+            return "prod", f"tag {k}={tags[k]} not recognised; treated as prod"
+    return "prod", "no environment tag; treated as prod"
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -105,6 +127,8 @@ class RemediationItem(BaseModel):
     fixed_version: str = ""
     cloud_provider: str = ""
     controls_tag: str = ""               # CompensatingControls tag on the asset at the last scan
+    environment: str = "prod"            # prod | nonprod; unknown counts as prod (see environment_from_tags)
+    environment_source: str = ""         # the tag it came from, or why it was assumed
     # What the agent advised (advisory text only; it changes no state): {at, author, kind, text}.
     suggestions: list[dict[str, str]] = Field(default_factory=list)
     tier: str
@@ -147,6 +171,7 @@ def new_item(sf: ScoredFinding, path: Path, now: datetime | None = None) -> Reme
     now = now or utcnow()
     f = sf.finding
     key = finding_key(f)
+    env, env_source = environment_from_tags(sf.context.tags)
     return RemediationItem(
         item_id="REM-" + _short_hash(key),
         key=key,
@@ -157,6 +182,8 @@ def new_item(sf: ScoredFinding, path: Path, now: datetime | None = None) -> Reme
         fixed_version=f.fixed_version,
         cloud_provider=f.cloud_provider,
         controls_tag=current_tag(sf.context) or "",
+        environment=env,
+        environment_source=env_source,
         tier=sf.tier,
         risk_score=sf.risk_score,
         path=path,

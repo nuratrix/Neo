@@ -19,8 +19,9 @@ IN_WINDOW = T0 + 2 * HOUR
 
 
 def _scored(f):
+    # Non-production hosts: these tests are about the executor; production ordering is in test_change_groups.
     return score_all([f], {f.resource_id: AssetContext(resource_id=f.resource_id, exposure="public",
-                                                       criticality="critical")},
+                                                       criticality="critical", tags={"Environment": "dev"})},
                      {f.cve_id: Enrichment(cve_id=f.cve_id, epss=0.9)})
 
 
@@ -180,7 +181,8 @@ def test_health_check_timeout_rolls_back():
 def _two_approved():
     s, c = SqliteStore(":memory:"), MockChangeClient()
     fs = [_finding(resource_id="i-1", package_name="openssl"), _finding(resource_id="i-2", package_name="curl")]
-    ctx = {f.resource_id: AssetContext(resource_id=f.resource_id, exposure="public", criticality="critical") for f in fs}
+    ctx = {f.resource_id: AssetContext(resource_id=f.resource_id, exposure="public", criticality="critical",
+                                       tags={"Environment": "dev"}) for f in fs}
     sync_scan(s, score_all(fs, ctx, {"CVE-1": Enrichment(cve_id="CVE-1", epss=0.9)}), "scan-1", T0)
     ids = []
     for item in sorted(s.list(), key=lambda i: i.resource_id):

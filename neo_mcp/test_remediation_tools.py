@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import neo_mcp_server as srv
 from neo_core.cli import _load_mock
+from neo_core import change_groups
 from neo_core.risk_engine import score_all
 
 FIXTURE = os.path.join(ROOT, "neo_core", "examples", "mock_findings.json")
@@ -43,11 +44,13 @@ def test_tools_resources_and_prompt_are_registered_with_constraints():
     tools = {t.name: t for t in asyncio.run(srv.mcp.list_tools())}
     for name in ("track_remediation", "create_change_request", "sync_change_approvals",
                  "check_patch_gate", "mock_advance_change", "execute_patch", "close_verified_changes",
-                 "record_agent_suggestion"):
+                 "record_agent_suggestion", "plan_change_groups", "create_group_change_request",
+                 "execute_change"):
         assert name in tools, name
     # The agent gets no tool to approve a change or advance an item. It can patch, but only
     # through the executor's gate, and the tool defaults to a dry run.
-    assert not {"approve_change", "advance_item"} & set(tools)
+    assert not {"approve_change", "advance_item", "waive_precedence"} & set(tools)
+    assert tools["execute_change"].inputSchema["properties"]["dry_run"]["default"] is True
     assert tools["execute_patch"].inputSchema["properties"]["dry_run"]["default"] is True
     assert tools["create_change_request"].inputSchema["properties"]["item_id"]["pattern"].startswith("^REM-")
     assert any(p.name == "draft_change_request" for p in asyncio.run(srv.mcp.list_prompts()))
@@ -95,10 +98,15 @@ def test_change_request_flow_end_to_end_in_mock():
     assert "not IMPLEMENT" in srv.check_patch_gate(LOG4J)["reason"]
     srv.mock_advance_change(chg, srv.ChangeState.IMPLEMENT, "approved")
     gate = srv.check_patch_gate(LOG4J)
+    assert not gate["allowed"] and "non-production" in gate["precedence"]   # prod host, no non-prod twin
+    change_groups.waive_precedence(srv._store(), [LOG4J], "change.manager",
+                                   "single production web tier; no non-production replica exists")
+    gate = srv.check_patch_gate(LOG4J)
     assert gate["allowed"] and gate["instance_ids"] == ["i-0public-web-01"]
     detail = json.loads(srv.remediation_item(LOG4J))
     assert detail["refs"]["chg_number"] == chg
-    assert [h["state"] for h in detail["history"]][-2:] == ["IN_REVIEW", "APPROVED"]
+    assert [h["state"] for h in detail["history"]][-3:-1] == ["IN_REVIEW", "APPROVED"]
+    assert "waived" in detail["history"][-1]["event"]                       # the waiver is on the record
 
 
 def test_execute_patch_dry_run_then_patch_then_close_on_rescan_evidence():
@@ -108,6 +116,11 @@ def test_execute_patch_dry_run_then_patch_then_close_on_rescan_evidence():
     srv.mock_advance_change(chg, srv.ChangeState.SCHEDULED, "approved")
     srv.sync_change_approvals()
     srv.mock_advance_change(chg, srv.ChangeState.IMPLEMENT, "approved")
+    # A production host with no non-production twin: the executor refuses until a named person waives
+    # the non-production-first rule. The agent has no tool for that; a person does it outside MCP.
+    assert "non-production" in srv.execute_patch(LOG4J)["detail"]
+    change_groups.waive_precedence(srv._store(), [LOG4J], "change.manager",
+                                   "single production web tier; no non-production replica exists")
     assert srv.execute_patch(LOG4J)["outcome"] == "dry-run"                     # default touches nothing
     assert json.loads(srv.remediation_item(LOG4J))["state"] == "APPROVED"
     assert srv.execute_patch(LOG4J, dry_run=False)["outcome"] == "deployed"

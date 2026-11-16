@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 from .controls import current_tag
 from .exceptions import detect_tag_drift, watch_exceptions
-from .remediation import TERMINAL, RemediationItem, State, finding_key, new_item, utcnow
+from .remediation import TERMINAL, RemediationItem, State, environment_from_tags, finding_key, new_item, utcnow
 from .remediation_store import RemediationStore
 from .router import route
 from .models import ScoredFinding
@@ -116,6 +116,12 @@ def refresh_scores(
         if item is None or item.state in TERMINAL:
             continue
         tag = current_tag(sf.context) or ""
+        env, env_source = environment_from_tags(sf.context.tags)
+        if env != item.environment and item.state in (State.PROPOSED, State.REOPENED):
+            # Only between changes: an item already in a change keeps the environment CAB approved.
+            item.environment, item.environment_source = env, env_source
+            item.updated_at = now.isoformat()
+            store.save(item, f"environment now {env} ({env_source})")
         if (item.tier, item.risk_score) != (sf.tier, sf.risk_score):
             event = f"rescored {item.tier} {item.risk_score} -> {sf.tier} {sf.risk_score}"
             item.tier, item.risk_score, item.controls_tag = sf.tier, sf.risk_score, tag
